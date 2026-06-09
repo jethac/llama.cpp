@@ -21,9 +21,11 @@
 #include "../../src/llama-ext.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cinttypes>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <filesystem>
 #include <utility>
@@ -40,6 +42,36 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+struct token_loglikelihood_score {
+    float logprob = std::numeric_limits<float>::lowest();
+    bool is_greedy = false;
+};
+
+static token_loglikelihood_score get_token_loglikelihood_score(const float * logits, int32_t n_vocab, llama_token token) {
+    if (token < 0 || token >= n_vocab) {
+        return {};
+    }
+
+    int32_t argmax = 0;
+    float max_logit = logits[0];
+    for (int32_t i = 1; i < n_vocab; ++i) {
+        if (logits[i] > max_logit) {
+            max_logit = logits[i];
+            argmax = i;
+        }
+    }
+
+    double sum = 0.0;
+    for (int32_t i = 0; i < n_vocab; ++i) {
+        sum += std::exp(double(logits[i] - max_logit));
+    }
+
+    token_loglikelihood_score result;
+    result.logprob = float(double(logits[token]) - (double(max_logit) + std::log(sum)));
+    result.is_greedy = token == argmax;
+    return result;
+}
 
 static uint32_t server_n_outputs_max(const common_params & params) {
     const uint32_t n_batch  = params.n_batch;
@@ -113,6 +145,11 @@ struct server_slot {
     llama_tokens generated_tokens;
 
     std::vector<completion_token_output> generated_token_probs;
+
+    std::vector<server_task_result_loglikelihood::token_score> loglikelihood_scores;
+    std::vector<bool> loglikelihood_score_seen;
+    float loglikelihood_sum = 0.0f;
+    bool loglikelihood_all_greedy = false;
 
     bool has_next_token = true;
     bool has_new_line   = false;
@@ -219,6 +256,10 @@ struct server_slot {
         }
         generated_tokens.clear();
         generated_token_probs.clear();
+        loglikelihood_scores.clear();
+        loglikelihood_score_seen.clear();
+        loglikelihood_sum = 0.0f;
+        loglikelihood_all_greedy = false;
         json_schema = json();
 
         // clear speculative decoding stats
@@ -1541,6 +1582,20 @@ private:
 
         slot.task = std::make_unique<const server_task>(std::move(task));
 
+        if (slot.task->type == SERVER_TASK_TYPE_LOGLIKELIHOOD) {
+            const size_t n_scores = slot.task->loglikelihood_tokens.size();
+            slot.loglikelihood_scores.resize(n_scores);
+            slot.loglikelihood_score_seen.assign(n_scores, false);
+            slot.loglikelihood_sum = 0.0f;
+            slot.loglikelihood_all_greedy = n_scores > 0;
+
+            for (size_t i = 0; i < n_scores; ++i) {
+                auto & score = slot.loglikelihood_scores[i];
+                score.id = slot.task->loglikelihood_tokens[i];
+                score.text = common_token_to_piece(ctx_tgt, score.id, true);
+            }
+        }
+
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
             : SLOT_STATE_STARTED;
@@ -1957,6 +2012,71 @@ private:
         queue_results.send(std::move(res));
     }
 
+    void collect_loglikelihood(server_slot & slot, const llama_batch & batch) {
+        const llama_tokens & continuation_tokens = slot.task->loglikelihood_tokens;
+        if (continuation_tokens.empty()) {
+            return;
+        }
+
+        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+        const llama_pos first_scored_pos = slot.task->loglikelihood_context_n - 1;
+
+        for (int i = 0; i < batch.n_tokens; ++i) {
+            if (!batch.logits[i] || batch.seq_id[i][0] != slot.id) {
+                continue;
+            }
+
+            const llama_pos pos = batch.pos[i];
+            const int32_t i_score = int32_t(pos - first_scored_pos);
+            if (i_score < 0 || i_score >= (int32_t) continuation_tokens.size()) {
+                continue;
+            }
+
+            const float * logits = llama_get_logits_ith(ctx_tgt, i);
+            if (logits == nullptr) {
+                continue;
+            }
+
+            auto score = get_token_loglikelihood_score(logits, n_vocab, continuation_tokens[i_score]);
+            auto & dst = slot.loglikelihood_scores[i_score];
+            dst.logprob = score.logprob;
+            dst.is_greedy = score.is_greedy;
+
+            if (!slot.loglikelihood_score_seen[i_score]) {
+                slot.loglikelihood_score_seen[i_score] = true;
+                slot.loglikelihood_sum += score.logprob;
+            }
+            slot.loglikelihood_all_greedy = slot.loglikelihood_all_greedy && score.is_greedy;
+        }
+    }
+
+    void send_loglikelihood(const server_slot & slot) {
+        auto res = std::make_unique<server_task_result_loglikelihood>();
+        res->id       = slot.task->id;
+        res->index    = slot.task->index;
+        res->n_tokens = slot.task->n_tokens();
+
+        const llama_tokens & all_tokens = slot.task->tokens.get_tokens();
+        const int32_t n_ctx_tokens = slot.task->loglikelihood_context_n;
+        const llama_tokens & continuation_tokens = slot.task->loglikelihood_tokens;
+
+        res->context_tokens.assign(all_tokens.begin(), all_tokens.begin() + n_ctx_tokens);
+        res->continuation_tokens = continuation_tokens;
+        res->continuation_token_logprobs = slot.loglikelihood_scores;
+        res->target_logprob_sum = slot.loglikelihood_sum;
+        res->all_tokens_greedy = slot.loglikelihood_all_greedy;
+
+        const int32_t n_scores_found = std::count(slot.loglikelihood_score_seen.begin(), slot.loglikelihood_score_seen.end(), true);
+        if (n_scores_found != (int32_t) continuation_tokens.size()) {
+            send_error(slot.task->id, "Failed to collect logits for all supplied continuation tokens", ERROR_TYPE_SERVER);
+            return;
+        }
+
+        SLT_DBG(slot, "sending loglikelihood result, n_scores = %d, target_logprob_sum = %f\n", n_scores_found, res->target_logprob_sum);
+
+        queue_results.send(std::move(res));
+    }
+
     //
     // Functions to process the task
     //
@@ -2068,6 +2188,7 @@ private:
             case SERVER_TASK_TYPE_INFILL:
             case SERVER_TASK_TYPE_EMBEDDING:
             case SERVER_TASK_TYPE_RERANK:
+            case SERVER_TASK_TYPE_LOGLIKELIHOOD:
                 {
                     // special case: if input is provided via CLI, tokenize it first
                     // otherwise, no need to tokenize as it's already done inside the HTTP thread
@@ -3009,11 +3130,18 @@ private:
 
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.n_tokens < n_batch) {
+                        const int32_t i_prompt_token = slot.prompt.n_tokens();
+
                         // get next token to process
-                        llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                        llama_token cur_tok = input_tokens[i_prompt_token];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
                             break; // end of text chunk
                         }
+
+                        const bool loglikelihood_score_pos =
+                            slot.task->type == SERVER_TASK_TYPE_LOGLIKELIHOOD &&
+                            i_prompt_token >= slot.task->loglikelihood_context_n - 1 &&
+                            i_prompt_token < slot.task->loglikelihood_context_n + (int32_t) slot.task->loglikelihood_tokens.size() - 1;
 
                         // if this is an alora request with pre-invocation
                         // tokens that are not cached, we need to stop filling
@@ -3030,10 +3158,14 @@ private:
                             cur_tok,
                             slot.prompt.tokens.pos_next(),
                             { slot.id },
-                            slot.need_embd());
+                            slot.need_embd() || loglikelihood_score_pos);
                         slot.prompt.tokens.push_back(cur_tok);
 
                         slot.n_prompt_tokens_processed++;
+
+                        if (loglikelihood_score_pos) {
+                            break;
+                        }
 
                         // stop the prompt batch exactly before the latest user input, so a checkpoint
                         // can be created after the previous messages
@@ -3075,8 +3207,10 @@ private:
 
                         GGML_ASSERT(batch.n_tokens > 0);
 
-                        // extract the logits only for the last token
-                        batch.logits[batch.n_tokens - 1] = true;
+                        if (slot.task->type != SERVER_TASK_TYPE_LOGLIKELIHOOD) {
+                            // extract the logits only for the last token
+                            batch.logits[batch.n_tokens - 1] = true;
+                        }
 
                         slot.n_decoded = 0;
                         slot.i_batch   = batch.n_tokens - 1;
@@ -3303,6 +3437,14 @@ private:
             // on successful decode, restore the original batch size
             n_batch = llama_n_batch(ctx_tgt);
 
+            for (auto & slot : slots) {
+                if (slot.task &&
+                        slot.task->type == SERVER_TASK_TYPE_LOGLIKELIHOOD &&
+                        (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT)) {
+                    collect_loglikelihood(slot, batch_view);
+                }
+            }
+
             // handle `n_cmpl > 1` tasks - when the main prompt is processed, activate all child tasks too
             for (auto & slot : slots) {
                 if (slot.state == SLOT_STATE_DONE_PROMPT && slot.task->is_parent()) {
@@ -3349,6 +3491,13 @@ private:
 
                     if (slot.task->type == SERVER_TASK_TYPE_RERANK) {
                         send_rerank(slot, batch_view);
+                        slot.release();
+                        slot.i_batch = -1;
+                        continue; // continue loop of slots
+                    }
+
+                    if (slot.task->type == SERVER_TASK_TYPE_LOGLIKELIHOOD) {
+                        send_loglikelihood(slot);
                         slot.release();
                         slot.i_batch = -1;
                         continue; // continue loop of slots
@@ -4561,6 +4710,78 @@ void server_routes::init_routes() {
         }
 
         res->ok(json{{"content", std::move(content)}});
+        return res;
+    };
+
+    this->post_loglikelihood = [this](const server_http_req & req) {
+        auto res = create_response();
+        const json body = json::parse(req.body);
+
+        if (!body.contains("context")) {
+            res->error(format_error_response("\"context\" must be provided", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!body.contains("continuation")) {
+            res->error(format_error_response("\"continuation\" must be provided", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        const bool add_special = json_value(body, "add_special", true);
+        const bool parse_special = json_value(body, "parse_special", true);
+
+        auto context_inputs = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, body.at("context"), add_special, parse_special);
+        auto continuation_inputs = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, body.at("continuation"), false, parse_special);
+
+        if (context_inputs.size() != 1 || continuation_inputs.size() != 1) {
+            res->error(format_error_response("\"context\" and \"continuation\" must each describe exactly one token sequence", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        server_tokens context_tokens = std::move(context_inputs[0]);
+        server_tokens continuation_tokens = std::move(continuation_inputs[0]);
+        if (context_tokens.has_mtmd || continuation_tokens.has_mtmd) {
+            res->error(format_error_response("Multimodal loglikelihood scoring is not supported", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        if (context_tokens.empty()) {
+            res->error(format_error_response("\"context\" must not tokenize to an empty sequence", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (continuation_tokens.empty()) {
+            res->error(format_error_response("\"continuation\" must not tokenize to an empty sequence", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        const int32_t context_n = context_tokens.size();
+        const llama_tokens continuation_ids = continuation_tokens.get_tokens();
+
+        server_tokens task_tokens;
+        task_tokens.insert(context_tokens.get_tokens());
+        task_tokens.insert(continuation_ids);
+
+        auto & rd = res->rd;
+        {
+            server_task task(SERVER_TASK_TYPE_LOGLIKELIHOOD);
+            task.id = rd.get_new_id();
+            task.tokens = std::move(task_tokens);
+            task.loglikelihood_context_n = context_n;
+            task.loglikelihood_tokens = continuation_ids;
+            task.params.cache_prompt = false;
+            rd.post_task(std::move(task));
+        }
+
+        auto result = rd.next(req.should_stop);
+        if (!result) {
+            GGML_ASSERT(req.should_stop());
+            return res;
+        }
+        if (result->is_error()) {
+            res->error(result->to_json());
+            return res;
+        }
+
+        GGML_ASSERT(dynamic_cast<server_task_result_loglikelihood*>(result.get()) != nullptr);
+        res->ok(result->to_json());
         return res;
     };
 

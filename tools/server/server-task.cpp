@@ -1870,6 +1870,35 @@ json server_task_result_rerank::to_json() {
 }
 
 //
+// server_task_result_loglikelihood
+//
+json server_task_result_loglikelihood::to_json() {
+    json scores = json::array();
+    for (const auto & score : continuation_token_logprobs) {
+        std::string txt(score.text);
+        txt.resize(validate_utf8(txt));
+        scores.push_back(json {
+            {"id",        score.id},
+            {"token",     txt},
+            {"bytes",     completion_token_output::str_to_bytes(score.text)},
+            {"logprob",   score.logprob},
+            {"is_greedy", score.is_greedy},
+        });
+    }
+
+    return json {
+        {"index",                         index},
+        {"context_token_ids",             context_tokens},
+        {"continuation_token_ids",        continuation_tokens},
+        {"continuation_token_logprobs",   scores},
+        {"target_logprob_sum",            target_logprob_sum},
+        {"all_tokens_greedy",             all_tokens_greedy},
+        {"lm_eval_loglikelihood_tuple",   json::array({target_logprob_sum, all_tokens_greedy})},
+        {"tokens_evaluated",              n_tokens},
+    };
+}
+
+//
 // server_task_result_error
 //
 json server_task_result_error::to_json() {

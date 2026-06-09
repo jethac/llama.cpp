@@ -17,6 +17,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_COMPLETION,
     SERVER_TASK_TYPE_EMBEDDING,
     SERVER_TASK_TYPE_RERANK,
+    SERVER_TASK_TYPE_LOGLIKELIHOOD,
     SERVER_TASK_TYPE_INFILL,
     SERVER_TASK_TYPE_CANCEL,
     SERVER_TASK_TYPE_CONTROL,
@@ -150,6 +151,10 @@ struct server_task {
     task_params   params;
     server_tokens tokens;
 
+    // used by SERVER_TASK_TYPE_LOGLIKELIHOOD
+    int32_t loglikelihood_context_n = 0;
+    llama_tokens loglikelihood_tokens;
+
     // only used by CLI, this allow tokenizing CLI inputs on server side
     // we need this because mtmd_context and vocab are not accessible outside of server_context
     bool                    cli = false;
@@ -194,6 +199,7 @@ struct server_task {
         switch (type) {
             case SERVER_TASK_TYPE_COMPLETION:
             case SERVER_TASK_TYPE_INFILL:
+            case SERVER_TASK_TYPE_LOGLIKELIHOOD:
                 return true;
             default:
                 return false;
@@ -490,6 +496,25 @@ struct server_task_result_rerank : server_task_result {
     float score = -1e6;
 
     int32_t n_tokens;
+
+    virtual json to_json() override;
+};
+
+struct server_task_result_loglikelihood : server_task_result {
+    struct token_score {
+        llama_token id = LLAMA_TOKEN_NULL;
+        std::string text;
+        float logprob = 0.0f;
+        bool is_greedy = false;
+    };
+
+    llama_tokens context_tokens;
+    llama_tokens continuation_tokens;
+    std::vector<token_score> continuation_token_logprobs;
+
+    int32_t n_tokens = 0;
+    float target_logprob_sum = 0.0f;
+    bool all_tokens_greedy = false;
 
     virtual json to_json() override;
 };
