@@ -52,7 +52,9 @@ if (MUSAToolkit_FOUND)
             ../ggml-cuda/template-instances/fattn-vec-instance-f16-f16.cu
             ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-q4_0.cu
             ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu)
+            ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu
+            ../ggml-cuda/template-instances/fattn-vec-instance-nvfp4-nvfp4.cu
+            ../ggml-cuda/template-instances/fattn-vec-instance-nvfp4-nvfp4-split.cu)
     endif()
 
     set_source_files_properties(${GGML_SOURCES_MUSA} PROPERTIES LANGUAGE CXX)
