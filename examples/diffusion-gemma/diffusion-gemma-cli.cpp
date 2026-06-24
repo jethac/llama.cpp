@@ -269,6 +269,9 @@ int main(int argc, char ** argv) {
     ctx_params.n_batch  = n_ub;
     ctx_params.n_ubatch = n_ub;
     ctx_params.no_perf  = params.no_perf;
+    ctx_params.flash_attn_type = params.flash_attn_type;
+    ctx_params.type_k = params.cache_type_k;
+    ctx_params.type_v = params.cache_type_v;
     ctx_params.diffusion_self_cond_top_k = SC_K;
     ctx_params.diffusion_input_gpu_groups = params.diffusion.input_gpu_groups;
     ctx_params.diffusion_fused_self_cond_embd = params.diffusion.fused_self_cond_embd;
