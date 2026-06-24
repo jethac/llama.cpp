@@ -328,6 +328,43 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
     return sum;
 }
 
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_nvfp4(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_nvfp4 * K_nvfp4 = (const block_nvfp4 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+        const int i0 = k_KQ * int(sizeof(int));
+        const int ib = i0 / QK_NVFP4;
+        const int ir = i0 % QK_NVFP4;
+        const int s  = ir / QK_NVFP4_SUB;
+        const int j  = ir % QK_NVFP4_SUB;
+
+        const int u = Q_q8[k_KQ_0/nthreads];
+        const int8_t * q8 = (const int8_t *) &u;
+
+        const float2 * Q_ds = (const float2 *) Q_ds_v;
+        const float Q_d = Q_ds[k_KQ_0/nthreads].x;
+        const float K_d = ggml_cuda_ue4m3_to_fp32(K_nvfp4[ib].d[s]);
+
+#pragma unroll
+        for (int l = 0; l < int(sizeof(int)); ++l) {
+            const int i = j + l;
+            const uint8_t q = K_nvfp4[ib].qs[s*(QK_NVFP4_SUB/2) + i%(QK_NVFP4_SUB/2)];
+            const uint8_t qc = i < QK_NVFP4_SUB/2 ? q & 0x0F : q >> 4;
+            sum += Q_d * K_d * kvalues_mxfp4[qc] * q8[l];
+        }
+    }
+
+    return sum;
+}
+
 template <typename Tds, int ni>
 static __device__ __forceinline__ void quantize_q8_1_to_shared(
     const float * __restrict__ x, const float scale, int * __restrict__ yq32, void * __restrict__ yds) {
@@ -617,6 +654,44 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
     }
 }
 
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_nvfp4(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_nvfp4 * x = (const block_nvfp4 *) vx;
+
+    static_assert(ne == 2 || ne == 4, "bad ne");
+    float vals[ne];
+
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int64_t il = i0 + l;
+        const int64_t ibl = il / QK_NVFP4;
+        const int     irl = il % QK_NVFP4;
+        const int     sl  = irl / QK_NVFP4_SUB;
+        const int     jl  = irl % QK_NVFP4_SUB;
+
+        const uint8_t q = x[ibl].qs[sl*(QK_NVFP4_SUB/2) + jl%(QK_NVFP4_SUB/2)];
+        const uint8_t qc = jl < QK_NVFP4_SUB/2 ? q & 0x0F : q >> 4;
+        vals[l] = ggml_cuda_ue4m3_to_fp32(x[ibl].d[sl]) * kvalues_mxfp4[qc];
+    }
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same_v<T, half>) {
+#pragma unroll
+        for (int l0 = 0; l0 < ne; l0 += 2) {
+            ((half2 *) dst)[l0/2] = make_half2(vals[l0 + 0], vals[l0 + 1]);
+        }
+    } else
+#endif // FP16_AVAILABLE
+    if constexpr (std::is_same_v<T, float>) {
+#pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            ((float *) dst)[l] = vals[l];
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
+}
+
 template <ggml_type type_K, int D, int nthreads>
 constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     if constexpr (type_K == GGML_TYPE_F16) {
@@ -633,6 +708,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_NVFP4) {
+        return vec_dot_fattn_vec_KQ_nvfp4<D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
@@ -655,6 +732,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_q8_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
         return dequantize_V_bf16<float, ne>;
+    } else if constexpr (type_V == GGML_TYPE_NVFP4) {
+        return dequantize_V_nvfp4<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;

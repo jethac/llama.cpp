@@ -63,7 +63,18 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
 }
 
 static void usage(char ** argv) {
-    printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-v/--verbose]\n", argv[0]);
+    printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-ctk type] [-ctv type] [-v/--verbose]\n", argv[0]);
+}
+
+static ggml_type ggml_type_from_name(const std::string & name) {
+    for (int type = 0; type < GGML_TYPE_COUNT; ++type) {
+        const auto ggml_type = (enum ggml_type) type;
+        if (name == ggml_type_name(ggml_type)) {
+            return ggml_type;
+        }
+    }
+
+    throw std::runtime_error("unknown ggml type: " + name);
 }
 
 static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32_t n_vocab, const size_t seed){
@@ -89,11 +100,15 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     uint32_t n_layer = 2;
     if (arch == LLM_ARCH_LLAMA4) {
         n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
-    } else if (arch == LLM_ARCH_GEMMA4) {
-        n_embd = 128;
+    } else if (arch == LLM_ARCH_GEMMA3) {
+        n_embd = 512; // use 256-wide heads to cover Gemma 3 KV-cache quantization shapes
         n_head = 2;
-        n_ff   = 192;
-        n_layer = 5; // need at least 5 for swa_pattern (every 5th is full_attention)
+        n_ff   = 768;
+    } else if (arch == LLM_ARCH_GEMMA4) {
+        n_embd = 1024; // use 512-wide heads to cover Gemma 4 NVFP4 V-split attention
+        n_head = 2;
+        n_ff   = 1536;
+        n_layer = 2;
     } else if (arch == LLM_ARCH_GEMMA3N) {
         n_embd = 64;
         n_head = 1;
@@ -183,9 +198,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH_SWA,        n_embd_head);
         ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,      n_embd_head);
         ms.add_kv(LLM_KV_ROPE_FREQ_BASE_SWA,              10000.0f);
-        // SWA pattern: every 5th layer is full attention (matches E2B layer_types)
-        ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, uint32_t(5));
-    } else if (arch == LLM_ARCH_MIMO2 || arch == LLM_ARCH_STEP35) {
+        ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, std::vector<uint32_t>({1, 0}));
+    } else if (arch == LLM_ARCH_COHERE2MOE || arch == LLM_ARCH_MIMO2 || arch == LLM_ARCH_STEP35) {
         std::vector<uint32_t> pattern;
         pattern.reserve(n_layer);
         for (uint32_t il = 0; il < n_layer; il++) {
@@ -254,7 +268,8 @@ static bool silent_model_load_progress(float /*progress*/, void * /*user_data*/)
 
 static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const std::vector<ggml_backend_dev_t> & devs,
-        const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false) {
+        const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false,
+        ggml_type type_k = GGML_TYPE_F16, ggml_type type_v = GGML_TYPE_F16) {
     GGML_ASSERT((gguf_ctx == nullptr) != (file == nullptr));
     llama_model_params model_params = llama_model_default_params();
     model_params.progress_callback = silent_model_load_progress;
@@ -269,6 +284,11 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
     ctx_params.n_threads_batch = 4;
     if (!encode) {
         ctx_params.n_ubatch = 64;
+    }
+    ctx_params.type_k = type_k;
+    ctx_params.type_v = type_v;
+    if (ggml_is_quantized(type_k) || ggml_is_quantized(type_v)) {
+        ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     }
 
     size_t tmp = seed;
@@ -392,8 +412,11 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_WAVTOKENIZER_DEC) {
         return false; // FIXME CUDA backend crashes.
     }
-    if (arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_GEMMA4_ASSISTANT || arch == LLM_ARCH_DIFFUSION_GEMMA) {
+    if (arch == LLM_ARCH_GEMMA4_ASSISTANT) {
         return false; // FIXME @ngxson
+    }
+    if (arch == LLM_ARCH_DIFFUSION_GEMMA) {
+        return false; // FIXME synthetic fixture does not cover diffusion-gemma's runtime inputs.
     }
     if (arch == LLM_ARCH_LLAMA_EMBED || arch == LLM_ARCH_GEMMA_EMBEDDING || arch == LLM_ARCH_T5ENCODER) {
         return false; // FIXME Embedding (?) models produce inconsistent results.
@@ -447,8 +470,11 @@ static int save_models(const llm_arch target_arch, const size_t seed, const ggml
         if (target_arch != LLM_ARCH_UNKNOWN && arch != target_arch) {
             continue;
         }
-        if (arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_GEMMA4_ASSISTANT || arch == LLM_ARCH_DIFFUSION_GEMMA) {
-            continue; // FIXME: ISWA KV cache initialization needs more fixture params
+        if (arch == LLM_ARCH_GEMMA4_ASSISTANT || (arch == LLM_ARCH_GEMMA4 && target_arch == LLM_ARCH_UNKNOWN)) {
+            continue; // Gemma 4 is intentionally kept out of the full sweep; target it explicitly with -a gemma4.
+        }
+        if (arch == LLM_ARCH_DIFFUSION_GEMMA) {
+            continue; // FIXME synthetic fixture does not cover diffusion-gemma's runtime inputs.
         }
         for (bool moe : {false, true}) {
             if (moe && !moe_implemented(arch)) {
@@ -472,7 +498,7 @@ static int save_models(const llm_arch target_arch, const size_t seed, const ggml
     return 0;
 }
 
-static int test_backends(const llm_arch target_arch, const size_t seed, const ggml_log_level log_level) {
+static int test_backends(const llm_arch target_arch, const size_t seed, const ggml_log_level log_level, ggml_type type_k, ggml_type type_v) {
     struct user_data_t {
         struct {
             ggml_log_callback callback;
@@ -550,8 +576,11 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
         if (target_arch != LLM_ARCH_UNKNOWN && arch != target_arch) {
             continue;
         }
-        if (arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_GEMMA4_ASSISTANT || arch == LLM_ARCH_DIFFUSION_GEMMA) {
-            continue; // FIXME: ISWA KV cache initialization needs more fixture params
+        if (arch == LLM_ARCH_GEMMA4_ASSISTANT || (arch == LLM_ARCH_GEMMA4 && target_arch == LLM_ARCH_UNKNOWN)) {
+            continue; // Gemma 4 is intentionally kept out of the full sweep; target it explicitly with -a gemma4.
+        }
+        if (arch == LLM_ARCH_DIFFUSION_GEMMA) {
+            continue; // FIXME synthetic fixture does not cover diffusion-gemma's runtime inputs.
         }
 
         const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;
@@ -577,17 +606,18 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
                 std::string status_nmse      = "\033[1;33mSKIP\033[0m";
                 std::string status_roundtrip = "\033[1;33mSKIP\033[0m";
                 char nmse_str[12] = {0};
-                bool skip = !arch_supported(arch) || (dc.split_mode == LLAMA_SPLIT_MODE_TENSOR && dc.devs.empty());
+                bool skip = !arch_supported(arch) ||
+                    (dc.split_mode == LLAMA_SPLIT_MODE_TENSOR && (dc.devs.empty() || arch == LLM_ARCH_GEMMA4));
 #if defined(GGML_USE_WEBGPU)
                 skip = true; // FIXME
 #endif // GGML_USE_WEBGPU
                 if (!skip) {
                     if (logits_cpu.empty()) {
-                        model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {}, LLAMA_SPLIT_MODE_LAYER, encode);
+                        model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {}, LLAMA_SPLIT_MODE_LAYER, encode, type_k, type_v);
                         logits_cpu = get_logits(model_and_ctx_cpu.first.get(), model_and_ctx_cpu.second.get(), tokens, encode);
                     }
                     if (dc.split_mode != LLAMA_SPLIT_MODE_TENSOR || llm_arch_supports_sm_tensor(arch)) {
-                        model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, dc.devs, dc.split_mode, encode);
+                        model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, dc.devs, dc.split_mode, encode, type_k, type_v);
                         logits_dev = get_logits(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens, encode);
                         const double nmse_val = nmse(logits_cpu, logits_dev);
                         snprintf(nmse_str, sizeof(nmse_str), "(%.2e)", nmse_val);
@@ -609,7 +639,7 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
                         ms.save(file);
                         rewind(file);
 
-                        auto model_and_ctx_roundtrip = get_model_and_ctx(nullptr, file, seed, dc.devs, dc.split_mode, encode);
+                        auto model_and_ctx_roundtrip = get_model_and_ctx(nullptr, file, seed, dc.devs, dc.split_mode, encode, type_k, type_v);
                         const std::vector<float> logits_roundtrip = get_logits(
                             model_and_ctx_roundtrip.first.get(), model_and_ctx_roundtrip.second.get(), tokens, encode);
                         status_roundtrip = "\033[1;32mOK\033[0m";
@@ -642,6 +672,8 @@ int main(int argc, char ** argv) {
     llm_arch arch = LLM_ARCH_UNKNOWN;
     size_t seed = rd();
     ggml_log_level log_level = GGML_LOG_LEVEL_ERROR;
+    ggml_type type_k = GGML_TYPE_F16;
+    ggml_type type_v = GGML_TYPE_F16;
     std::string out;
 
     for (int i = 1; i < argc; i++) {
@@ -670,6 +702,24 @@ int main(int argc, char ** argv) {
             log_level = GGML_LOG_LEVEL_INFO;
             continue;
         }
+        if (strcmp(argv[i], "-ctk") == 0 || strcmp(argv[i], "--cache-type-k") == 0) {
+            if (i + 1 < argc) {
+                type_k = ggml_type_from_name(argv[++i]);
+                continue;
+            } else {
+                usage(argv);
+                return 1;
+            }
+        }
+        if (strcmp(argv[i], "-ctv") == 0 || strcmp(argv[i], "--cache-type-v") == 0) {
+            if (i + 1 < argc) {
+                type_v = ggml_type_from_name(argv[++i]);
+                continue;
+            } else {
+                usage(argv);
+                return 1;
+            }
+        }
         if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--out") == 0) {
             if (i + 1 < argc) {
                 out = argv[++i];
@@ -685,7 +735,7 @@ int main(int argc, char ** argv) {
         if (!out.empty()) {
             return save_models(arch, seed, log_level, out);
         }
-        return test_backends(arch, seed, log_level);
+        return test_backends(arch, seed, log_level, type_k, type_v);
     } catch (const std::exception & err) {
         fprintf(stderr, "encountered runtime error: %s\n", err.what());
         return -1;
