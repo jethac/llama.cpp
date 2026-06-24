@@ -1,4 +1,5 @@
 #include "models.h"
+#include "llama-kv-cache-iswa.h"
 
 void llama_model_gemma4::load_arch_hparams(llama_model_loader & ml) {
     hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
@@ -205,6 +206,12 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
 
         const int64_t n_head    = hparams.n_head(il);
         const int64_t n_head_kv = hparams.n_head_kv(il);
+        const bool use_nvfp4_v_split =
+            cparams.flash_attn &&
+            !hparams.is_swa(il) &&
+            n_embd_head == 512 &&
+            inp_attn->mctx->get_base()->type_k() == GGML_TYPE_NVFP4 &&
+            inp_attn->mctx->get_base()->type_v() == GGML_TYPE_NVFP4;
 
         const float freq_base_l  = model.get_rope_freq_base(cparams, il);
         const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
@@ -263,14 +270,26 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
 
             cb(Kcur, "Kcur_pos", il);
 
-            cur = build_attn(inp_attn, model.layers[il].wo,
-                    nullptr, model.layers[il].wo_s, Qcur, Kcur, Vcur, nullptr, nullptr, nullptr,
-                    hparams.f_attention_scale, il);
+            if (use_nvfp4_v_split) {
+                cur = build_attn_v_split(inp_attn,
+                        model.layers[il].wo, nullptr, model.layers[il].wo_s,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, hparams.f_attention_scale, il, 256);
+            } else {
+                cur = build_attn(inp_attn, model.layers[il].wo,
+                        nullptr, model.layers[il].wo_s, Qcur, Kcur, Vcur, nullptr, nullptr, nullptr,
+                        hparams.f_attention_scale, il);
+            }
         } else {
             // reuse KV cache of earlier layers
-            cur = build_attn(inp_attn,
-                    model.layers[il].wo, nullptr, model.layers[il].wo_s,
-                    Qcur, nullptr, nullptr, nullptr, nullptr, nullptr, hparams.f_attention_scale, il);
+            if (use_nvfp4_v_split) {
+                cur = build_attn_v_split(inp_attn,
+                        model.layers[il].wo, nullptr, model.layers[il].wo_s,
+                        Qcur, nullptr, nullptr, nullptr, nullptr, nullptr, hparams.f_attention_scale, il, 256);
+            } else {
+                cur = build_attn(inp_attn,
+                        model.layers[il].wo, nullptr, model.layers[il].wo_s,
+                        Qcur, nullptr, nullptr, nullptr, nullptr, nullptr, hparams.f_attention_scale, il);
+            }
         }
 
         // TODO @ngxson : strip unused token right after the last KV layer to speed up prompt processing

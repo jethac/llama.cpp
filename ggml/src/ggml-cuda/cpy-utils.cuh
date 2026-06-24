@@ -186,6 +186,92 @@ static __device__ void quantize_f32_iq4_nl_block(const float * __restrict__ x, b
     y->d = sumq2 > 0 ? sumqx/sumq2 : d;
 }
 
+static __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_ue4m3_sw(float x) {
+    if (!(x > 0.0f)) {
+        return 0;
+    }
+    if (x > 448.0f) {
+        x = 448.0f;
+    }
+
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof(bits));
+
+    const int fp32_exp  = ((bits >> 23) & 0xFF) - 127;
+    const int fp32_man  =  (bits >> 20) & 0x7;
+    int       ue4m3_exp = fp32_exp + 7;
+
+    if (ue4m3_exp <= 0) {
+        int man = (int) (x * 512.0f + 0.5f);
+        man = min(man, 7);
+        if (man < 1) {
+            return 0;
+        }
+        return (uint8_t) man;
+    }
+
+    if (ue4m3_exp >= 15) {
+        return 0x7E;
+    }
+
+    const int round_bit = (bits >> 19) & 1;
+    int ue4m3_man = fp32_man + round_bit;
+    if (ue4m3_man > 7) {
+        ue4m3_man = 0;
+        ue4m3_exp++;
+        if (ue4m3_exp >= 15) {
+            return 0x7E;
+        }
+    }
+
+    return (uint8_t) ((ue4m3_exp << 3) | ue4m3_man);
+}
+
+static __device__ __forceinline__ uint8_t best_index_mxfp4_cuda(float x, float e) {
+    int best_index = 0;
+    float best_err = fabsf((float) kvalues_mxfp4[0]*e - x);
+
+#pragma unroll
+    for (int i = 1; i < 16; ++i) {
+        const float err = fabsf((float) kvalues_mxfp4[i]*e - x);
+        if (err < best_err) {
+            best_index = i;
+            best_err = err;
+        }
+    }
+
+    return (uint8_t) best_index;
+}
+
+static __device__ void quantize_f32_nvfp4_block(const float * __restrict__ x, block_nvfp4 * __restrict__ y) {
+    static_assert(QK_NVFP4 == 64, "unexpected NVFP4 block size");
+    static_assert(QK_NVFP4_SUB == 16, "unexpected NVFP4 sub-block size");
+
+#pragma unroll
+    for (int s = 0; s < QK_NVFP4/QK_NVFP4_SUB; ++s) {
+        const float * xb = x + s*QK_NVFP4_SUB;
+
+        float amax = 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < QK_NVFP4_SUB; ++j) {
+            const float v = xb[j];
+            amax = fmaxf(amax, fabsf(v));
+        }
+
+        const uint8_t ue = ggml_cuda_fp32_to_ue4m3_sw(amax / 6.0f);
+        y->d[s] = ue;
+        const float d = ggml_cuda_ue4m3_to_fp32(ue);
+
+#pragma unroll
+        for (int j = 0; j < QK_NVFP4_SUB/2; ++j) {
+            const uint8_t q0 = best_index_mxfp4_cuda(xb[j],                    d);
+            const uint8_t q1 = best_index_mxfp4_cuda(xb[j + QK_NVFP4_SUB/2],   d);
+            y->qs[s*(QK_NVFP4_SUB/2) + j] = q0 | (q1 << 4);
+        }
+    }
+}
+
 // Wrapper functions for cpy.cu compatibility
 static __device__ void cpy_blck_f32_q4_0(const char * cxi, char * cdsti) {
     quantize_f32_q4_0_block((const float *)cxi, (block_q4_0 *)cdsti);
@@ -209,6 +295,10 @@ static __device__ void cpy_blck_f32_q8_0(const char * cxi, char * cdsti) {
 
 static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
     quantize_f32_iq4_nl_block((const float *)cxi, (block_iq4_nl *)cdsti);
+}
+
+static __device__ void cpy_blck_f32_nvfp4(const char * cxi, char * cdsti) {
+    quantize_f32_nvfp4_block((const float *)cxi, (block_nvfp4 *)cdsti);
 }
 
 template<typename src_t, typename dst_t>
