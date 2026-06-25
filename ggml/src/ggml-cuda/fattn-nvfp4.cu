@@ -6,14 +6,45 @@
 
 #include <cstring>
 
+#if defined(GGML_CUDA_NVFP4_FA) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#define GGML_CUDA_NVFP4_FA_MMA
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#define GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV)
+#define GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS)
+#define GGML_CUDA_NVFP4_FA_MMA_TWOPASS
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED)
+#define GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+#define GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ)
+#define GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
+#endif
+
 #if defined(GGML_CUDA_NVFP4_FA)
-#define GGML_CUDA_NVFP4_FA_TC_DEBUG
-#define GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
-#define GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
-#define GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
-#define GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV_ROWS GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS
-#define GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS
-#endif // defined(GGML_CUDA_NVFP4_FA)
+#define GGML_CUDA_NVFP4_FA_ACTIVE_SPLIT_KV_ROWS GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS
+#elif defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV)
+#define GGML_CUDA_NVFP4_FA_ACTIVE_SPLIT_KV_ROWS GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV_ROWS
+#endif
+
+#if defined(GGML_CUDA_NVFP4_FA)
+#define GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS
+#elif defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#define GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS
+#endif
 
 static constexpr size_t FATTN_NVFP4_LUT_SCALE_COUNT = 256;
 static constexpr size_t FATTN_NVFP4_LUT_FP4_COUNT   = 256;
@@ -24,15 +55,15 @@ static constexpr int    FATTN_NVFP4_MAX_NFRAG       = FATTN_NVFP4_MAX_HEAD_DIM /
 static constexpr int    FATTN_NVFP4_PV_COL_TILE     = 8;
 static constexpr int    FATTN_NVFP4_PV_COL_TILES_PER_CTA = 8;
 static constexpr int    FATTN_NVFP4_MAX_NCOL_TILE   = FATTN_NVFP4_MAX_HEAD_DIM / FATTN_NVFP4_PV_COL_TILE;
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#ifdef GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 static constexpr int    FATTN_NVFP4_TC_KQ_WARPS     = 1;
 static constexpr int    FATTN_NVFP4_TC_PV_WARPS     = 8;
 static constexpr int    FATTN_NVFP4_TC_WARPS        = FATTN_NVFP4_TC_KQ_WARPS + FATTN_NVFP4_TC_PV_WARPS;
 static constexpr int    FATTN_NVFP4_TC_THREADS      = FATTN_NVFP4_TC_WARPS * WARP_SIZE;
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
-static constexpr int    FATTN_NVFP4_SPLIT_KV_ROWS   = GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV_ROWS;
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
+static constexpr int    FATTN_NVFP4_SPLIT_KV_ROWS   = GGML_CUDA_NVFP4_FA_ACTIVE_SPLIT_KV_ROWS;
+#endif // GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
+#endif // GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 static_assert(FATTN_NVFP4_MAX_NCOL_TILE % FATTN_NVFP4_PV_COL_TILES_PER_CTA == 0,
     "PV tile grouping must divide the maximum column tile count");
 
@@ -43,7 +74,7 @@ struct fattn_nvfp4_mtp4_params {
     const half        * mask;
     float             * dst;
     const uint32_t    * v_lut;
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
     float             * split_partial;
     float             * split_prob;
     float2            * split_meta;
@@ -51,7 +82,7 @@ struct fattn_nvfp4_mtp4_params {
     int64_t             kv_split_count;
     int64_t             kv_split_base;
     int64_t             kv_split_active_count;
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 
     float scale;
 
@@ -108,7 +139,7 @@ static fattn_nvfp4_mtp4_params ggml_cuda_fattn_nvfp4_mtp4_make_params(const ggml
     params.mask  = (const half *) mask->data;
     params.dst   = (float *) dst->data;
     params.v_lut = v_lut;
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
     params.split_partial = nullptr;
     params.split_prob    = nullptr;
     params.split_meta    = nullptr;
@@ -116,7 +147,7 @@ static fattn_nvfp4_mtp4_params ggml_cuda_fattn_nvfp4_mtp4_make_params(const ggml
     params.kv_split_count = 1;
     params.kv_split_base = 0;
     params.kv_split_active_count = 1;
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
     params.scale = scale;
 
     params.ne_q_rows  = Q->ne[1];
@@ -151,7 +182,7 @@ static fattn_nvfp4_mtp4_params ggml_cuda_fattn_nvfp4_mtp4_make_params(const ggml
 }
 
 static dim3 ggml_cuda_fattn_nvfp4_mtp4_blocks(const fattn_nvfp4_mtp4_params & params) {
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
     const int64_t grid_z = params.ne_seqs * params.kv_split_count;
 #else
     const int64_t grid_z = params.ne_seqs;
@@ -163,15 +194,15 @@ static dim3 ggml_cuda_fattn_nvfp4_mtp4_blocks(const fattn_nvfp4_mtp4_params & pa
         (uint32_t) grid_z);
 }
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && \
-    !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV) && \
-    !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && \
+    !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) && \
+    !defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 static int ggml_cuda_fattn_nvfp4_ncol_group(const int64_t head_dim) {
     GGML_ASSERT(head_dim % (FATTN_NVFP4_PV_COL_TILE * FATTN_NVFP4_PV_COL_TILES_PER_CTA) == 0);
     GGML_ASSERT(head_dim <= FATTN_NVFP4_MAX_HEAD_DIM);
     return (int) (head_dim / FATTN_NVFP4_PV_COL_TILE / FATTN_NVFP4_PV_COL_TILES_PER_CTA);
 }
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) && !defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 
 static __device__ __forceinline__ uint32_t ggml_cuda_fattn_nvfp4_half2_bits(const half2 v) {
     union {
@@ -186,7 +217,7 @@ static __device__ __forceinline__ uint32_t ggml_cuda_fattn_nvfp4_block_scale(con
     return *reinterpret_cast<const uint32_t *>(b.d);
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
+#ifdef GGML_CUDA_NVFP4_FA_MMA
 static __device__ __forceinline__ block_nvfp4 ggml_cuda_fattn_nvfp4_quantize_q_frag(
         const float * q,
         const int     frag) {
@@ -201,9 +232,9 @@ static __device__ __forceinline__ block_nvfp4 ggml_cuda_fattn_nvfp4_quantize_q_f
     quantize_f32_nvfp4_block(q_frag, &out);
     return out;
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
+#ifdef GGML_CUDA_NVFP4_FA_MMA
 struct fattn_nvfp4_softmax_state {
     float kq_max;
     float rowsum;
@@ -225,7 +256,7 @@ static __device__ __forceinline__ fattn_nvfp4_pv_state ggml_cuda_fattn_nvfp4_pv_
         {0.0f, 0.0f, 0.0f, 0.0f},
     };
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA
 
 static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_mask_value(
         const fattn_nvfp4_mtp4_params & params,
@@ -248,7 +279,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dequant(
     return ggml_cuda_ue4m3_to_fp32(b.d[sub]) * kvalues_mxfp4[qc];
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dequant_packed(
         const int *    qs_words,
         const uint32_t scale_words,
@@ -262,7 +293,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dequant_packed(
     const uint8_t scale = (uint8_t) ((scale_words >> (8 * sub)) & 0xff);
     return ggml_cuda_ue4m3_to_fp32(scale) * kvalues_mxfp4[qc];
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 
 static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dequant_row_value(
         const block_nvfp4 * row,
@@ -270,7 +301,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dequant_row_value(
     return ggml_cuda_fattn_nvfp4_dequant(row[col / QK_NVFP4], col % QK_NVFP4);
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
+#ifdef GGML_CUDA_NVFP4_FA_MMA
 static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_half2_from_bits(const uint32_t bits) {
     union {
         uint32_t u;
@@ -301,7 +332,7 @@ static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_lookup_row_value_l
     return ggml_cuda_fattn_nvfp4_half2_from_bits(ggml_cuda_fattn_nvfp4_lookup_row_value_half_bits(lut, row, col));
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#ifdef GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_lookup_row_pair_half2(
         const uint32_t *    lut,
         const block_nvfp4 * row0,
@@ -311,8 +342,8 @@ static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_lookup_row_pair_ha
     const uint32_t high = ggml_cuda_fattn_nvfp4_lookup_row_value_half_bits(lut, row1, col);
     return ggml_cuda_fattn_nvfp4_half2_from_bits(low | (high << 16));
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
+#endif // GGML_CUDA_NVFP4_FA_MMA
 
 static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dot_q_k(
         const float *       q,
@@ -333,7 +364,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dot_q_k(
     return sum;
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
+#ifdef GGML_CUDA_NVFP4_FA_MMA
 static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_rescale_pv_fragment(
         fattn_nvfp4_pv_state &      state,
         const float                 scale_old) {
@@ -361,7 +392,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_online_softmax_pre
 
     return scale_new;
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA
 
 static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_kq_mma(
         const int      ax0,
@@ -441,7 +472,7 @@ static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_pv_mma(
 #endif // TURING_MMA_AVAILABLE
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#ifdef GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_pv_a_i(const int l, const int lane) {
     return ((l % 2) * 8) + (lane / 4);
 }
@@ -465,9 +496,9 @@ static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_pv_c_i(const int l, 
 static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_pv_c_j(const int l, const int lane) {
     return ((lane % 4) * 2) + (l % 2);
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#endif // GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
+#ifdef GGML_CUDA_NVFP4_FA_MMA
 static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_store_pv_fragment(
         float *                           dst,
         const fattn_nvfp4_softmax_state & softmax,
@@ -489,7 +520,7 @@ static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_store_pv_fragment(
         }
     }
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA
 
 static __global__ void fattn_nvfp4_fill_lut(uint32_t * lut) {
     const size_t tid = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -505,19 +536,19 @@ static __global__ void fattn_nvfp4_fill_lut(uint32_t * lut) {
     }
 }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
+#ifdef GGML_CUDA_NVFP4_FA_MMA
 __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int tid  = threadIdx.x;
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV)
     const int ncol_group = (int) (params.v_head_dim / FATTN_NVFP4_PV_COL_TILE / FATTN_NVFP4_PV_COL_TILES_PER_CTA);
     const int64_t q_row_block = (int64_t) blockIdx.x / ncol_group;
     const int     pv_col_group = (int) blockIdx.x % ncol_group;
 #else
     const int64_t q_row_block = (int64_t) blockIdx.x;
     [[maybe_unused]] const int pv_col_group = 0;
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV)
 
     const int64_t q_row_base = q_row_block * FATTN_NVFP4_MTP4_ROWS;
     const int64_t q_head     = (int64_t) blockIdx.y;
@@ -541,12 +572,12 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
     __shared__ uint32_t kq_a_scale[tile_A::I];
     __shared__ uint32_t kq_b_scale[tile_B::I];
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV)
     using tile_PV_A = ggml_cuda_mma::tile<16, 8, half2>;
     using tile_PV_B = ggml_cuda_mma::tile< 8, 8, half2>;
     __shared__ half2 pv_a_tile[tile_PV_A::I * tile_PV_A::J];
     __shared__ half2 pv_b_tile[tile_PV_B::I * tile_PV_B::J];
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV)
 
     for (int q_idx = tid; q_idx < FATTN_NVFP4_MTP4_ROWS * nfrag; q_idx += WARP_SIZE) {
         const int row  = q_idx / nfrag;
@@ -577,7 +608,7 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
     }
     __syncwarp();
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
     static_assert(FATTN_NVFP4_MAX_HEAD_DIM % WARP_SIZE == 0, "scalar PV diagnostic assumes one warp covers the head");
 
     float kq_max[FATTN_NVFP4_MTP4_ROWS];
@@ -592,7 +623,7 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             pv_scalar[row][col_slot] = 0.0f;
         }
     }
-#elif defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#elif defined(GGML_CUDA_NVFP4_FA_MMA)
     fattn_nvfp4_softmax_state softmax_state[FATTN_NVFP4_MTP4_ROWS];
     fattn_nvfp4_pv_state      pv_state[FATTN_NVFP4_MTP4_ROWS][FATTN_NVFP4_PV_COL_TILES_PER_CTA];
 
@@ -604,7 +635,7 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             pv_state[row][tile] = ggml_cuda_fattn_nvfp4_pv_init();
         }
     }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
 
 #pragma unroll 1
     for (int64_t kv_row = 0; kv_row < params.ne_kv_rows; ++kv_row) {
@@ -678,7 +709,7 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
         }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 #pragma unroll
         for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
             float local_score = 0.0f;
@@ -697,11 +728,11 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             }
             kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
         }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#if defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_MMA)
         float p[FATTN_NVFP4_MTP4_ROWS] = {};
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_MMA)
 
 #pragma unroll
         for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
@@ -710,10 +741,10 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
                 continue;
             }
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#if defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_MMA)
             const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, q_row, kv_row, seq);
             const float score = kq_score[row] * params.scale + mask;
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
             const float kq_max_new = fmaxf(kq_max[row], score);
             const float scale_old = rowsum[row] == 0.0f ? 0.0f : expf(kq_max[row] - kq_max_new);
             const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
@@ -724,7 +755,7 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             rowsum[row] = rowsum[row] * scale_old + scale_new;
             kq_max[row] = kq_max_new;
             p[row] = scale_new;
-#elif defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#elif defined(GGML_CUDA_NVFP4_FA_MMA)
             float scale_old = 1.0f;
             p[row] = ggml_cuda_fattn_nvfp4_online_softmax_prepare(softmax_state[row], score, scale_old);
 
@@ -732,11 +763,11 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             for (int tile = 0; tile < FATTN_NVFP4_PV_COL_TILES_PER_CTA; ++tile) {
                 ggml_cuda_fattn_nvfp4_rescale_pv_fragment(pv_state[row][tile], scale_old);
             }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) || defined(GGML_CUDA_NVFP4_FA_MMA)
         }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
         const block_nvfp4 * v_ptr = params.V +
             kv_head * params.v_stride_head +
             seq     * params.v_stride_seq +
@@ -753,7 +784,7 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
                 pv_scalar[row][col_slot] += p[row] * ggml_cuda_fattn_nvfp4_dequant_row_value(v_ptr, col);
             }
         }
-#elif defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#elif defined(GGML_CUDA_NVFP4_FA_MMA)
         const block_nvfp4 * v_ptr = params.V +
             kv_head * params.v_stride_head +
             seq     * params.v_stride_seq +
@@ -803,11 +834,11 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
             }
         }
         }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
     }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#ifdef GGML_CUDA_NVFP4_FA_MMA
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
 #pragma unroll
     for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
         const int64_t q_row = q_row_base + row;
@@ -849,15 +880,15 @@ __global__ void fattn_nvfp4_mtp4_kernel(const fattn_nvfp4_mtp4_params params) {
                 params.v_head_dim);
         }
     }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
+#endif // GGML_CUDA_NVFP4_FA_MMA
 #else
     GGML_UNUSED(params);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int tid     = threadIdx.x;
@@ -867,7 +898,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
     const int64_t q_row_block = (int64_t) blockIdx.x;
     const int64_t q_row_base  = q_row_block * FATTN_NVFP4_MTP4_ROWS;
     const int64_t q_head      = (int64_t) blockIdx.y;
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_count;
     const int64_t kv_split    = (int64_t) blockIdx.z - seq * params.kv_split_count;
     const int64_t kv_start    = kv_split * params.kv_split_size;
@@ -877,7 +908,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
     const int64_t kv_split    = 0;
     const int64_t kv_start    = 0;
     const int64_t kv_end      = params.ne_kv_rows;
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#endif // GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
     const int64_t kv_head     = q_head / params.gqa_ratio;
 
     if (q_head >= params.ne_q_heads || seq >= params.ne_seqs || kv_head >= params.ne_kv_heads || kv_start >= kv_end) {
@@ -1022,7 +1053,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
                 kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
             }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 #pragma unroll
             for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
                 float local_score = 0.0f;
@@ -1041,7 +1072,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
                 }
                 kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
             }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 
             if (lane < FATTN_NVFP4_MTP4_ROWS) {
                 const int row = lane;
@@ -1200,14 +1231,14 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
                 const int col = col_base + ggml_cuda_fattn_nvfp4_pv_c_j(l, lane);
                 const int64_t q_row = q_row_base + row;
                 if (row < FATTN_NVFP4_MTP4_ROWS && q_row < params.ne_q_rows && col < params.v_head_dim && smem_rowsum[row] != 0.0f) {
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
                     if (params.split_partial != nullptr) {
                         const int64_t partial_idx =
                             ((((kv_split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows + q_row)
                                 * params.v_head_dim + col);
                         params.split_partial[partial_idx] = pv_accum[tile_idx][lane][l];
                     } else
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#endif // GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
                     {
                     float * dst_ptr = params.dst +
                         q_row  * params.dst_stride_row +
@@ -1220,7 +1251,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
         }
     }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
     if (params.split_meta != nullptr && warp_id == 0 && lane < FATTN_NVFP4_MTP4_ROWS) {
         const int row = lane;
         const int64_t q_row = q_row_base + row;
@@ -1230,15 +1261,15 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
             params.split_meta[meta_idx] = make_float2(smem_kq_max[row], smem_rowsum[row]);
         }
     }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#endif // GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
 #else
     GGML_UNUSED(params);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && \
-    defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && \
+    defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_TWOPASS)
 __global__ void fattn_nvfp4_mtp4_multiwarp_twopass_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int tid     = threadIdx.x;
@@ -1392,7 +1423,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_twopass_kernel(const fattn_nvfp4_mtp4
                 kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
             }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 #pragma unroll
             for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
                 float local_score = 0.0f;
@@ -1411,7 +1442,7 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_twopass_kernel(const fattn_nvfp4_mtp4
                 }
                 kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
             }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 
             if (lane < FATTN_NVFP4_MTP4_ROWS) {
                 const int row = lane;
@@ -1545,10 +1576,10 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_twopass_kernel(const fattn_nvfp4_mtp4
     GGML_UNUSED(params);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_TWOPASS)
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && \
-    defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && \
+    defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_DECOUPLED)
 static __device__ __forceinline__ int64_t ggml_cuda_fattn_nvfp4_split_prob_idx(
         const fattn_nvfp4_mtp4_params & params,
         const int64_t                   kv_split,
@@ -1556,11 +1587,11 @@ static __device__ __forceinline__ int64_t ggml_cuda_fattn_nvfp4_split_prob_idx(
         const int64_t                   q_head,
         const int64_t                   q_row,
         const int64_t                   kv_local) {
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#if defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     const int64_t prob_split = kv_split - params.kv_split_base;
 #else
     const int64_t prob_split = kv_split;
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     return ((((prob_split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows + q_row)
         * params.kv_split_size + kv_local);
 }
@@ -1572,13 +1603,13 @@ __global__ void fattn_nvfp4_mtp4_split_kq_prob_kernel(const fattn_nvfp4_mtp4_par
     const int64_t q_row_block = (int64_t) blockIdx.x;
     const int64_t q_row_base  = q_row_block * FATTN_NVFP4_MTP4_ROWS;
     const int64_t q_head      = (int64_t) blockIdx.y;
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#if defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_active_count;
     const int64_t kv_split    = params.kv_split_base + (int64_t) blockIdx.z - seq * params.kv_split_active_count;
 #else
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_count;
     const int64_t kv_split    = (int64_t) blockIdx.z - seq * params.kv_split_count;
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     const int64_t kv_start    = kv_split * params.kv_split_size;
     const int64_t kv_end      = min(params.ne_kv_rows, kv_start + params.kv_split_size);
     const int64_t kv_count    = kv_end - kv_start;
@@ -1710,7 +1741,7 @@ __global__ void fattn_nvfp4_mtp4_split_kq_prob_kernel(const fattn_nvfp4_mtp4_par
             kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
         }
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 #pragma unroll
         for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
             float local_score = 0.0f;
@@ -1729,7 +1760,7 @@ __global__ void fattn_nvfp4_mtp4_split_kq_prob_kernel(const fattn_nvfp4_mtp4_par
             }
             kq_score[row] = __shfl_sync(0xffffffff, local_score, 0);
         }
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_KQ
 
         if (lane < FATTN_NVFP4_MTP4_ROWS) {
             const int row = lane;
@@ -1783,13 +1814,13 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
     const int64_t q_row_block = (int64_t) blockIdx.x;
     const int64_t q_row_base  = q_row_block * FATTN_NVFP4_MTP4_ROWS;
     const int64_t q_head      = (int64_t) blockIdx.y;
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#if defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_active_count;
     const int64_t kv_split    = params.kv_split_base + (int64_t) blockIdx.z - seq * params.kv_split_active_count;
 #else
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_count;
     const int64_t kv_split    = (int64_t) blockIdx.z - seq * params.kv_split_count;
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     const int64_t kv_start    = kv_split * params.kv_split_size;
     const int64_t kv_end      = min(params.ne_kv_rows, kv_start + params.kv_split_size);
     const int64_t kv_count    = kv_end - kv_start;
@@ -1875,9 +1906,9 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
     GGML_UNUSED(params);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_DECOUPLED)
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
 __global__ void fattn_nvfp4_mtp4_split_kv_combine_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -1930,7 +1961,7 @@ __global__ void fattn_nvfp4_mtp4_split_kv_combine_kernel(const fattn_nvfp4_mtp4_
     GGML_UNUSED(params);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
 
 __global__ void fattn_nvfp4_mtp4_scalar_correctness_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
@@ -2136,11 +2167,11 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, cons
         return false;
     }
 
-#if defined(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#if defined(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG) && !defined(GGML_CUDA_NVFP4_FA_MMA)
     if ((Q->ne[0] != 256 && Q->ne[0] != 512) || (V->ne[0] != 256 && V->ne[0] != 512)) {
         return false;
     }
-#elif defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#elif defined(GGML_CUDA_NVFP4_FA_MMA)
     if ((Q->ne[0] != 256 && Q->ne[0] != 512) || (V->ne[0] != 256 && V->ne[0] != 512)) {
         return false;
     }
@@ -2199,7 +2230,7 @@ bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_supported(int device, const ggml_tensor
 
 #if defined(GGML_CUDA_NVFP4_FA)
     return shape_supported;
-#elif defined(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#elif defined(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG) || defined(GGML_CUDA_NVFP4_FA_MMA)
     // Non-shipping debug modes: scalar mode exercises the D=256/D=512 correctness
     // oracle; tensor-core mode exposes the unfinished native path for focused
     // backend-op diagnostics. Neither mode is enabled for release builds.
@@ -2226,43 +2257,43 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 
     fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, lut);
 
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
     ggml_cuda_pool_alloc<float>  split_partial_alloc(ctx.pool());
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
+#ifdef GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     ggml_cuda_pool_alloc<float>  split_prob_alloc(ctx.pool());
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
+#endif // GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     ggml_cuda_pool_alloc<float2> split_meta_alloc(ctx.pool());
 
     params.kv_split_size = FATTN_NVFP4_SPLIT_KV_ROWS;
     params.kv_split_count = (params.ne_kv_rows + params.kv_split_size - 1) / params.kv_split_size;
     params.kv_split_base = 0;
     params.kv_split_active_count = params.kv_split_count;
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#if defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     params.kv_split_active_count =
-        min((int64_t) GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS, params.kv_split_count);
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+        min((int64_t) GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS, params.kv_split_count);
+#endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     params.split_partial = split_partial_alloc.alloc(
         (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim);
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
+#ifdef GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     params.split_prob = split_prob_alloc.alloc(
         (size_t) params.kv_split_active_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.kv_split_size);
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
+#endif // GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     params.split_meta = split_meta_alloc.alloc(
         (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows);
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
 
     const dim3 blocks_num = ggml_cuda_fattn_nvfp4_mtp4_blocks(params);
 
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED)
+#ifdef GGML_CUDA_NVFP4_FA_MMA
+#ifdef GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
+#if defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_DECOUPLED)
     const dim3 kq_prob_block(WARP_SIZE, 1, 1);
     const dim3 pv_block(FATTN_NVFP4_TC_PV_WARPS * WARP_SIZE, 1, 1);
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#if defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     for (int64_t kv_split_base = 0; kv_split_base < params.kv_split_count; kv_split_base += params.kv_split_active_count) {
         params.kv_split_base = kv_split_base;
         params.kv_split_active_count =
-            min((int64_t) GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS, params.kv_split_count - kv_split_base);
+            min((int64_t) GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS, params.kv_split_count - kv_split_base);
         const dim3 window_blocks_num(blocks_num.x, blocks_num.y, (uint32_t) (params.ne_seqs * params.kv_split_active_count));
         fattn_nvfp4_mtp4_split_kq_prob_kernel<<<window_blocks_num, kq_prob_block, 0, ctx.stream()>>>(params);
         fattn_nvfp4_mtp4_split_pv_from_prob_kernel<<<window_blocks_num, pv_block, 0, ctx.stream()>>>(params);
@@ -2270,24 +2301,24 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 #else
     fattn_nvfp4_mtp4_split_kq_prob_kernel<<<blocks_num, kq_prob_block, 0, ctx.stream()>>>(params);
     fattn_nvfp4_mtp4_split_pv_from_prob_kernel<<<blocks_num, pv_block, 0, ctx.stream()>>>(params);
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+#endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
 #else
     const dim3 block_dim(FATTN_NVFP4_TC_THREADS, 1, 1);
-#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS)
+#if defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_TWOPASS)
     fattn_nvfp4_mtp4_multiwarp_twopass_kernel<<<blocks_num, block_dim, 0, ctx.stream()>>>(params);
 #else
     fattn_nvfp4_mtp4_multiwarp_kernel<<<blocks_num, block_dim, 0, ctx.stream()>>>(params);
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS)
-#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED)
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_TWOPASS)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_MMA_DECOUPLED)
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
     const int64_t combine_ne = params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim;
     const dim3 combine_block(256, 1, 1);
     const dim3 combine_grid((uint32_t) ((combine_ne + combine_block.x - 1) / combine_block.x), 1, 1);
     fattn_nvfp4_mtp4_split_kv_combine_kernel<<<combine_grid, combine_block, 0, ctx.stream()>>>(params);
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#endif // GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
 #else
     const dim3 block_dim(WARP_SIZE, 1, 1);
-#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
+#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
     fattn_nvfp4_mtp4_kernel<<<blocks_num, block_dim, 0, ctx.stream()>>>(params);
 #else
     const int ncol_group = ggml_cuda_fattn_nvfp4_ncol_group(params.v_head_dim);
@@ -2296,11 +2327,11 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
         blocks_num.y,
         blocks_num.z);
     fattn_nvfp4_mtp4_kernel<<<blocks_num_tc, block_dim, 0, ctx.stream()>>>(params);
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
+#endif // GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 #else
     const dim3 block_dim((uint32_t) params.v_head_dim, 1, 1);
     fattn_nvfp4_mtp4_scalar_correctness_kernel<<<blocks_num, block_dim, 0, ctx.stream()>>>(params);
-#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
+#endif // GGML_CUDA_NVFP4_FA_MMA
     CUDA_CHECK(cudaGetLastError());
 }
