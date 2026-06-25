@@ -115,6 +115,31 @@ run_cmd() {
     fi
 }
 
+write_manifest() {
+    local manifest_dir="$1"
+    local manifest_path="$manifest_dir/artifact-manifest.tsv"
+    local tmp_path="$manifest_dir/artifact-manifest.tmp"
+    {
+        printf 'sha256\tsize_bytes\tpath\n'
+        while IFS= read -r -d '' file_path; do
+            local rel_path
+            rel_path="${file_path#$manifest_dir/}"
+            local size_bytes
+            size_bytes="$(wc -c < "$file_path" | tr -d '[:space:]')"
+            local sha
+            if command -v sha256sum >/dev/null 2>&1; then
+                sha="$(sha256sum "$file_path" | awk '{print $1}')"
+            elif command -v shasum >/dev/null 2>&1; then
+                sha="$(shasum -a 256 "$file_path" | awk '{print $1}')"
+            else
+                sha="sha256-unavailable"
+            fi
+            printf '%s\t%s\t%s\n' "$sha" "$size_bytes" "$rel_path"
+        done < <(find "$manifest_dir" -maxdepth 1 -type f ! -name 'artifact-manifest.tsv' ! -name 'artifact-manifest.tmp' -print0 | sort -z)
+    } > "$tmp_path"
+    mv "$tmp_path" "$manifest_path"
+}
+
 gate_script="$repo_root/tools/spark-roofline/run-spark-kq256-gate.sh"
 self_test="$repo_root/tools/spark-roofline/test-kq256-handoff-tools.py"
 bundler="$repo_root/tools/spark-roofline/bundle-kq256-artifacts.py"
@@ -261,11 +286,16 @@ run_cmd "${full_cmd[@]}"
 
 if [[ "$dry_run" -eq 0 ]]; then
     mkdir -p "$out_dir"
+    copied_build_logs=0
     for build_log in cmake-configure.log cmake-build.log; do
         if [[ ! -f "$out_dir/$build_log" && -f "$preflight_dir/$build_log" ]]; then
             cp "$preflight_dir/$build_log" "$out_dir/$build_log"
+            copied_build_logs=1
         fi
     done
+    if [[ "$copied_build_logs" -ne 0 ]]; then
+        write_manifest "$out_dir"
+    fi
 fi
 
 handoff_stage="bundle_create"
