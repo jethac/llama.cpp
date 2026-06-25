@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -231,6 +231,27 @@ def parse_log(path: Path) -> dict[str, object]:
             row["localacc_ms"] = float(match.group(10))
             continue
 
+        match = re.match(
+            r"^combined256_bypassvdequant:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
+            r"([0-9.]+)\s+GB/s-V-payload-read\s+blocks=(\d+)\s+warps=(\d+)\s+"
+            r"iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["bypassvdequant_total_tops"] = float(match.group(1))
+            row["bypassvdequant_useful_mtp_total_tops"] = float(match.group(2))
+            row["bypassvdequant_kq_issue_tops"] = float(match.group(3))
+            row["bypassvdequant_mixedpv_issue_tops"] = float(match.group(4))
+            row["bypassvdequant_k_compact_read_gbps"] = float(match.group(5))
+            row["bypassvdequant_v_payload_read_gbps"] = float(match.group(6))
+            row["bypassvdequant_blocks"] = int(match.group(7))
+            row["bypassvdequant_warps"] = int(match.group(8))
+            row["bypassvdequant_iters"] = int(match.group(9))
+            row["bypassvdequant_ms"] = float(match.group(10))
+            continue
+
     return row
 
 
@@ -331,6 +352,7 @@ def main() -> int:
         "combined256_stagehalf_occupancy_pct",
         "combined256_stagehalf_shared_kib",
         "combined256_localacc_occupancy_pct",
+        "combined256_bypassvdequant_occupancy_pct",
         "stripmine_g1_measured_total_tops",
         "stripmine_g1_useful_mtp_measured_total_tops",
         "stripmine_g1_kq_issue_tops",
@@ -366,11 +388,18 @@ def main() -> int:
         "localacc_mixedpv_issue_tops",
         "localacc_k_compact_read_gbps",
         "localacc_v_compact_read_gbps",
+        "bypassvdequant_total_tops",
+        "bypassvdequant_useful_mtp_total_tops",
+        "bypassvdequant_kq_issue_tops",
+        "bypassvdequant_mixedpv_issue_tops",
+        "bypassvdequant_k_compact_read_gbps",
+        "bypassvdequant_v_payload_read_gbps",
         "kq_ms",
         "pv_ms",
         "combined_ms",
         "stagehalf_ms",
         "localacc_ms",
+        "bypassvdequant_ms",
         "device_name",
         "log",
     ]
@@ -490,6 +519,20 @@ def main() -> int:
                     mixedpv=row.get("localacc_mixedpv_issue_tops", ""),
                     k_read=row.get("localacc_k_compact_read_gbps", ""),
                     v_read=row.get("localacc_v_compact_read_gbps", ""),
+                )
+            )
+        if "bypassvdequant_total_tops" in row:
+            lines.append(
+                "threads={threads} bypassvdequant_total_tops={total} "
+                "useful_mtp_bypassvdequant_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_payload_read_gbps={v_read}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("bypassvdequant_total_tops", ""),
+                    useful_total=row.get("bypassvdequant_useful_mtp_total_tops", ""),
+                    kq_issue=row.get("bypassvdequant_kq_issue_tops", ""),
+                    mixedpv=row.get("bypassvdequant_mixedpv_issue_tops", ""),
+                    k_read=row.get("bypassvdequant_k_compact_read_gbps", ""),
+                    v_read=row.get("bypassvdequant_v_payload_read_gbps", ""),
                 )
             )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
