@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -210,6 +210,27 @@ def parse_log(path: Path) -> dict[str, object]:
             row["stagehalf_ms"] = float(match.group(12))
             continue
 
+        match = re.match(
+            r"^combined256_localacc:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
+            r"([0-9.]+)\s+GB/s-V-compact-read\s+blocks=(\d+)\s+warps=(\d+)\s+"
+            r"iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["localacc_total_tops"] = float(match.group(1))
+            row["localacc_useful_mtp_total_tops"] = float(match.group(2))
+            row["localacc_kq_issue_tops"] = float(match.group(3))
+            row["localacc_mixedpv_issue_tops"] = float(match.group(4))
+            row["localacc_k_compact_read_gbps"] = float(match.group(5))
+            row["localacc_v_compact_read_gbps"] = float(match.group(6))
+            row["localacc_blocks"] = int(match.group(7))
+            row["localacc_warps"] = int(match.group(8))
+            row["localacc_iters"] = int(match.group(9))
+            row["localacc_ms"] = float(match.group(10))
+            continue
+
     return row
 
 
@@ -309,6 +330,7 @@ def main() -> int:
         "combined256_stripmine_g4_occupancy_pct",
         "combined256_stagehalf_occupancy_pct",
         "combined256_stagehalf_shared_kib",
+        "combined256_localacc_occupancy_pct",
         "stripmine_g1_measured_total_tops",
         "stripmine_g1_useful_mtp_measured_total_tops",
         "stripmine_g1_kq_issue_tops",
@@ -338,10 +360,17 @@ def main() -> int:
         "stagehalf_v_compact_read_gbps",
         "stagehalf_shared_stage_rw_gbps",
         "stagehalf_shared_kib",
+        "localacc_total_tops",
+        "localacc_useful_mtp_total_tops",
+        "localacc_kq_issue_tops",
+        "localacc_mixedpv_issue_tops",
+        "localacc_k_compact_read_gbps",
+        "localacc_v_compact_read_gbps",
         "kq_ms",
         "pv_ms",
         "combined_ms",
         "stagehalf_ms",
+        "localacc_ms",
         "device_name",
         "log",
     ]
@@ -447,6 +476,20 @@ def main() -> int:
                     v_read=row.get("stagehalf_v_compact_read_gbps", ""),
                     shared_rw=row.get("stagehalf_shared_stage_rw_gbps", ""),
                     shared_kib=row.get("stagehalf_shared_kib", ""),
+                )
+            )
+        if "localacc_total_tops" in row:
+            lines.append(
+                "threads={threads} localacc_total_tops={total} "
+                "useful_mtp_localacc_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_read_gbps={v_read}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("localacc_total_tops", ""),
+                    useful_total=row.get("localacc_useful_mtp_total_tops", ""),
+                    kq_issue=row.get("localacc_kq_issue_tops", ""),
+                    mixedpv=row.get("localacc_mixedpv_issue_tops", ""),
+                    k_read=row.get("localacc_k_compact_read_gbps", ""),
+                    v_read=row.get("localacc_v_compact_read_gbps", ""),
                 )
             )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
