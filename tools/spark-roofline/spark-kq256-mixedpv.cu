@@ -171,6 +171,15 @@ static __device__ __forceinline__ uint32_t half2_bits(__half2 v) {
     return cvt.u;
 }
 
+static __device__ __forceinline__ __half2 half2_from_bits(uint32_t u) {
+    union {
+        __half2  h;
+        uint32_t u;
+    } cvt;
+    cvt.u = u;
+    return cvt.h;
+}
+
 static __device__ __forceinline__ __half2 dequant_nvfp4_byte_to_half2(uint8_t q, float d) {
     const float lo = d * fp4_e2m1_to_fp32(q & 0x0f);
     const float hi = d * fp4_e2m1_to_fp32(q >> 4);
@@ -288,6 +297,18 @@ __global__ void fill_nvfp4_bready_lut_kernel(uint32_t * lut) {
     const uint8_t scale = (uint8_t) (idx >> 8);
     const uint8_t q = (uint8_t) idx;
     lut[idx] = half2_bits(dequant_nvfp4_byte_to_half2(q, ue4m3_to_fp32(scale)));
+}
+
+__global__ void fill_nvfp4_small_lut_kernel(uint32_t * scale_lut, uint32_t * fp4_lut) {
+    const int idx = (int) blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= 256) {
+        return;
+    }
+
+    const float scale = ue4m3_to_fp32((uint8_t) idx);
+    scale_lut[idx] = half2_bits(__floats2half2_rn(scale, scale));
+    fp4_lut[idx] = half2_bits(__floats2half2_rn(fp4_e2m1_to_fp32((uint8_t) idx & 0x0f),
+                                                fp4_e2m1_to_fp32((uint8_t) idx >> 4)));
 }
 
 __device__ __forceinline__ void kq_mma_accumulate(
@@ -1240,6 +1261,126 @@ __global__ void mixedpv_lutb_kernel(
 #endif
 }
 
+__global__ void mixedpv_smalllut_kernel(
+        const block_nvfp4 * q,
+        const block_nvfp4 * k,
+        const block_nvfp4 * v,
+        const uint32_t *    v_scale_lut,
+        const uint32_t *    v_fp4_lut,
+        size_t              block_mask,
+        float *             out,
+        uint64_t            iters) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && __CUDA_ARCH__ < 1300
+    constexpr int nfrags = 256 / QK_NVFP4;
+    constexpr int k_tiles = 64;
+    constexpr int groups_per_frag = QK_NVFP4 / 8;
+
+    const int lane = threadIdx.x & 31;
+    const int warp = ((int) blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+
+    int q_a[nfrags][4];
+    uint32_t q_scale[nfrags];
+
+#pragma unroll
+    for (int frag = 0; frag < nfrags; ++frag) {
+        const size_t q_idx = (((size_t) warp * (size_t) nfrags + (size_t) frag) * 32u + (size_t) lane) & block_mask;
+        const block_nvfp4 q_blk = q[q_idx];
+        const uint32_t * q_qs = reinterpret_cast<const uint32_t *>(q_blk.qs);
+        q_a[frag][0] = (int) q_qs[(lane + 0) & 7];
+        q_a[frag][1] = (int) q_qs[(lane + 1) & 7];
+        q_a[frag][2] = (int) q_qs[(lane + 2) & 7];
+        q_a[frag][3] = (int) q_qs[(lane + 3) & 7];
+        q_scale[frag] = *reinterpret_cast<const uint32_t *>(q_blk.d);
+    }
+
+    float kq0 = 0.0f;
+    float kq1 = 0.0f;
+    float kq2 = 0.0f;
+    float kq3 = 0.0f;
+    float pv0 = 0.0f;
+    float pv1 = 0.0f;
+    float pv2 = 0.0f;
+    float pv3 = 0.0f;
+    float row_m0 = -64.0f;
+    float row_l0 = 0.0f;
+    float sink = 0.0f;
+
+    for (uint64_t i = 0; i < iters; ++i) {
+#pragma unroll
+        for (int tile = 0; tile < k_tiles; ++tile) {
+#pragma unroll
+            for (int frag = 0; frag < nfrags; ++frag) {
+                const size_t k_idx =
+                    (((size_t) warp + (size_t) i * (size_t) gridDim.x) * (size_t) k_tiles * (size_t) nfrags * 32u +
+                     (size_t) tile * (size_t) nfrags * 32u + (size_t) frag * 32u + (size_t) lane) & block_mask;
+
+                const block_nvfp4 k_blk = k[k_idx];
+                const uint32_t * k_qs = reinterpret_cast<const uint32_t *>(k_blk.qs);
+                const int bx0 = (int) k_qs[(lane + 0) & 7];
+                const int bx1 = (int) k_qs[(lane + 1) & 7];
+                const uint32_t k_scale = *reinterpret_cast<const uint32_t *>(k_blk.d);
+                kq_mma_accumulate(q_a[frag][0], q_a[frag][1], q_a[frag][2], q_a[frag][3], bx0, bx1, q_scale[frag], k_scale, kq0, kq1, kq2, kq3);
+            }
+
+            const int q_row = lane & 15;
+            const int base_pos = (int) (i & 1023u);
+            const bool causal = tile <= base_pos + q_row;
+            const bool swa = tile + 1024 >= base_pos + q_row;
+            const float score = (causal && swa) ? (kq0 + kq1 + kq2 + kq3) * 0.000244140625f : -64.0f;
+            const float next_m0 = fmaxf(row_m0, score);
+            const float alpha0 = row_l0 == 0.0f ? 0.0f : exp2f(row_m0 - next_m0);
+            row_l0 = row_l0 * alpha0 + exp2f(score - next_m0);
+            row_m0 = next_m0;
+
+            const float p_base = 1.0f / (row_l0 + 1.0f);
+            const uint32_t pax0 = half2_bits(__floats2half2_rn(p_base, p_base * 0.9375f));
+            const uint32_t pax1 = half2_bits(__floats2half2_rn(p_base * 0.875f, p_base * 0.8125f));
+            const uint32_t pax2 = half2_bits(__floats2half2_rn(p_base * 0.7500f, p_base * 0.6875f));
+            const uint32_t pax3 = half2_bits(__floats2half2_rn(p_base * 0.6250f, p_base * 0.5625f));
+
+            const size_t row_base = (((size_t) warp + (size_t) i * (size_t) gridDim.x) * (size_t) k_tiles * 64u +
+                                     (size_t) tile * 64u) & block_mask;
+
+#pragma unroll
+            for (int frag = 0; frag < nfrags; ++frag) {
+                const block_nvfp4 blk0 = v[(((row_base + (size_t) (2 * lane + 0)) * (size_t) nfrags) + (size_t) frag) & block_mask];
+                const block_nvfp4 blk1 = v[(((row_base + (size_t) (2 * lane + 1)) * (size_t) nfrags) + (size_t) frag) & block_mask];
+                const uint32_t * v0 = reinterpret_cast<const uint32_t *>(blk0.qs);
+                const uint32_t * v1 = reinterpret_cast<const uint32_t *>(blk1.qs);
+
+#pragma unroll
+                for (int group = 0; group < groups_per_frag; ++group) {
+                    const uint32_t word0 = v0[group];
+                    const uint32_t word1 = v1[group];
+                    const __half2 scale0 = half2_from_bits(__ldg(&v_scale_lut[blk0.d[group / 2]]));
+                    const __half2 scale1 = half2_from_bits(__ldg(&v_scale_lut[blk1.d[group / 2]]));
+
+#pragma unroll
+                    for (int kk = 0; kk < 4; ++kk) {
+                        const uint8_t q0b = (uint8_t) (word0 >> (8 * kk));
+                        const uint8_t q1b = (uint8_t) (word1 >> (8 * kk));
+                        const uint32_t bx0 = half2_bits(__hmul2(scale0, half2_from_bits(__ldg(&v_fp4_lut[q0b]))));
+                        const uint32_t bx1 = half2_bits(__hmul2(scale1, half2_from_bits(__ldg(&v_fp4_lut[q1b]))));
+                        pv_mma_accumulate(pax0, pax1, pax2, pax3, bx0, bx1, pv0, pv1, pv2, pv3);
+                    }
+
+                    sink += (pv0 + pv1 + pv2 + pv3) * (float) (frag * groups_per_frag + group + 1) * 0.0000001f;
+                }
+            }
+        }
+    }
+
+    if (lane == 0) {
+        out[warp] = kq0 + kq1 + kq2 + kq3 + pv0 + pv1 + pv2 + pv3 + row_m0 + row_l0 + sink;
+    }
+#else
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        out[0] = 0.0f;
+    }
+    (void) q; (void) k; (void) v; (void) v_scale_lut; (void) v_fp4_lut; (void) block_mask; (void) out; (void) iters;
+#endif
+}
+
 static float time_events(cudaEvent_t start, cudaEvent_t stop) {
     CUDA_CHECK(cudaEventSynchronize(stop));
     float ms = 0.0f;
@@ -1358,6 +1499,18 @@ static int run_lutb_benchmark(
         size_t n_warps,
         float * out);
 
+static int run_smalllut_benchmark(
+        const bench_config & cfg,
+        const cudaDeviceProp & prop,
+        const block_nvfp4 * q,
+        const block_nvfp4 * k,
+        const block_nvfp4 * v,
+        const uint32_t * v_scale_lut,
+        const uint32_t * v_fp4_lut,
+        size_t n_blocks,
+        size_t n_warps,
+        float * out);
+
 static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, int cc) {
     std::printf("config:               blocks=%d threads=%d mtp_rows=%d useful_m16=%.1f%% iters=%" PRIu64 "\n",
                 cfg.blocks, cfg.threads, cfg.mtp_rows, 100.0 * useful_mtp_fraction(cfg), cfg.iters);
@@ -1391,6 +1544,8 @@ static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, 
     block_nvfp4 * v = nullptr;
     uint32_t * v_bready = nullptr;
     uint32_t * v_lut = nullptr;
+    uint32_t * v_scale_lut = nullptr;
+    uint32_t * v_fp4_lut = nullptr;
     float * out = nullptr;
     CUDA_CHECK(cudaMalloc(&q_f32, q_float_count * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&q, n_blocks * sizeof(block_nvfp4)));
@@ -1398,6 +1553,8 @@ static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, 
     CUDA_CHECK(cudaMalloc(&v, n_blocks * sizeof(block_nvfp4)));
     CUDA_CHECK(cudaMalloc(&v_bready, n_blocks * (size_t) bready_entries_per_block * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&v_lut, 65536 * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&v_scale_lut, 256 * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&v_fp4_lut, 256 * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&out, n_warps * sizeof(float)));
 
     fill_f32_kernel<<<cfg.blocks, cfg.threads>>>(q_f32, q_float_count);
@@ -1411,6 +1568,11 @@ static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     std::printf("v_lut_bready: entries=65536 bytes=%zu\n", (size_t) 65536 * sizeof(uint32_t));
+
+    fill_nvfp4_small_lut_kernel<<<1, 256>>>(v_scale_lut, v_fp4_lut);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::printf("v_small_lut: scale_entries=256 fp4_entries=256 bytes=%zu\n", (size_t) 512 * sizeof(uint32_t));
 
     quantize_q_tile_kernel<<<cfg.blocks, cfg.threads>>>(q_f32, q, n_blocks, 1);
     CUDA_CHECK(cudaGetLastError());
@@ -1533,10 +1695,13 @@ static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, 
     run_bypassvdequant_benchmark(cfg, prop, q, k, v, n_blocks, n_warps, out);
     run_predecodedb_benchmark(cfg, prop, q, k, v_bready, predecode_ms, predecode_repeats, n_blocks, n_warps, out);
     run_lutb_benchmark(cfg, prop, q, k, v, v_lut, n_blocks, n_warps, out);
+    run_smalllut_benchmark(cfg, prop, q, k, v, v_scale_lut, v_fp4_lut, n_blocks, n_warps, out);
 
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
     CUDA_CHECK(cudaFree(out));
+    CUDA_CHECK(cudaFree(v_fp4_lut));
+    CUDA_CHECK(cudaFree(v_scale_lut));
     CUDA_CHECK(cudaFree(v_lut));
     CUDA_CHECK(cudaFree(v_bready));
     CUDA_CHECK(cudaFree(v));
@@ -1669,6 +1834,72 @@ static int run_lutb_benchmark(
                 v_compact_gb / seconds,
                 v_lut_gb / seconds,
                 (size_t) 65536 * sizeof(uint32_t),
+                n_blocks,
+                n_warps,
+                cfg.iters,
+                ms);
+
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    return 0;
+}
+
+static int run_smalllut_benchmark(
+        const bench_config & cfg,
+        const cudaDeviceProp & prop,
+        const block_nvfp4 * q,
+        const block_nvfp4 * k,
+        const block_nvfp4 * v,
+        const uint32_t * v_scale_lut,
+        const uint32_t * v_fp4_lut,
+        const size_t n_blocks,
+        const size_t n_warps,
+        float * out) {
+    constexpr int nfrags = 256 / QK_NVFP4;
+    constexpr int k_tiles = 64;
+    constexpr int groups_per_frag = QK_NVFP4 / 8;
+
+    const char * label = "combined256_smalllut";
+    const int active = print_occupancy(cfg, prop, label, (const void *) mixedpv_smalllut_kernel);
+    if (active == 0) {
+        std::printf("%s: skipped reason=kernel has zero active blocks for threads=%d\n", label, cfg.threads);
+        return 0;
+    }
+
+    mixedpv_smalllut_kernel<<<cfg.blocks, cfg.threads>>>(q, k, v, v_scale_lut, v_fp4_lut, n_blocks - 1, out, 2);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    cudaEvent_t start;
+    cudaEvent_t stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start));
+    mixedpv_smalllut_kernel<<<cfg.blocks, cfg.threads>>>(q, k, v, v_scale_lut, v_fp4_lut, n_blocks - 1, out, cfg.iters);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventRecord(stop));
+    const float ms = time_events(start, stop);
+
+    const double seconds = ms / 1000.0;
+    const double kq_ops = (double) n_warps * (double) cfg.iters * (double) k_tiles * (double) nfrags * 2.0 * 16.0 * 8.0 * 64.0;
+    const double pv_ops = (double) n_warps * (double) cfg.iters * (double) k_tiles * (double) nfrags *
+                          (double) groups_per_frag * 4.0 * 2.0 * 16.0 * 8.0 * 16.0;
+    const double k_compact_gb = (double) n_warps * (double) cfg.iters * (double) k_tiles * (double) nfrags * 32.0 * (double) sizeof(block_nvfp4) / 1.0e9;
+    const double v_compact_gb = (double) n_warps * (double) cfg.iters * (double) k_tiles * 64.0 *
+                               (double) nfrags * (double) sizeof(block_nvfp4) / 1.0e9;
+    const double v_small_lut_gb = (double) n_warps * (double) cfg.iters * (double) k_tiles * 64.0 *
+                                  (double) nfrags * (double) groups_per_frag * 5.0 * (double) sizeof(uint32_t) / 1.0e9;
+
+    std::printf("%s: %.3f modeled-total-TOPS  %.3f useful-mtp-modeled-total-TOPS  %.3f KQ-issue-TOPS  %.3f mixedPV-issue-TOPS  %.3f GB/s-K-compact-read  %.3f GB/s-V-compact-read  %.3f GB/s-V-small-lut-read  small_lut_bytes=%zu blocks=%zu warps=%zu iters=%" PRIu64 " time=%.3f ms\n",
+                label,
+                (kq_ops + pv_ops) / seconds / 1.0e12,
+                (kq_ops + pv_ops) / seconds / 1.0e12 * useful_mtp_fraction(cfg),
+                kq_ops / seconds / 1.0e12,
+                pv_ops / seconds / 1.0e12,
+                k_compact_gb / seconds,
+                v_compact_gb / seconds,
+                v_small_lut_gb / seconds,
+                (size_t) 512 * sizeof(uint32_t),
                 n_blocks,
                 n_warps,
                 cfg.iters,

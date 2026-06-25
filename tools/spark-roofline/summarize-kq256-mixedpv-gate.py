@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb|combined256_lutb) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb|combined256_lutb|combined256_smalllut) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -321,6 +321,29 @@ def parse_log(path: Path) -> dict[str, object]:
             row["lutb_ms"] = float(match.group(12))
             continue
 
+        match = re.match(
+            r"^combined256_smalllut:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
+            r"([0-9.]+)\s+GB/s-V-compact-read\s+([0-9.]+)\s+GB/s-V-small-lut-read\s+"
+            r"small_lut_bytes=(\d+)\s+blocks=(\d+)\s+warps=(\d+)\s+iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["smalllut_total_tops"] = float(match.group(1))
+            row["smalllut_useful_mtp_total_tops"] = float(match.group(2))
+            row["smalllut_kq_issue_tops"] = float(match.group(3))
+            row["smalllut_mixedpv_issue_tops"] = float(match.group(4))
+            row["smalllut_k_compact_read_gbps"] = float(match.group(5))
+            row["smalllut_v_compact_read_gbps"] = float(match.group(6))
+            row["smalllut_v_small_lut_read_gbps"] = float(match.group(7))
+            row["smalllut_lut_bytes"] = int(match.group(8))
+            row["smalllut_blocks"] = int(match.group(9))
+            row["smalllut_warps"] = int(match.group(10))
+            row["smalllut_iters"] = int(match.group(11))
+            row["smalllut_ms"] = float(match.group(12))
+            continue
+
     return row
 
 
@@ -424,6 +447,7 @@ def main() -> int:
         "combined256_bypassvdequant_occupancy_pct",
         "combined256_predecodedb_occupancy_pct",
         "combined256_lutb_occupancy_pct",
+        "combined256_smalllut_occupancy_pct",
         "v_lut_entries",
         "v_lut_bytes",
         "v_predecode_compact_read_gbps",
@@ -487,6 +511,14 @@ def main() -> int:
         "lutb_v_compact_read_gbps",
         "lutb_v_lut_read_gbps",
         "lutb_lut_bytes",
+        "smalllut_total_tops",
+        "smalllut_useful_mtp_total_tops",
+        "smalllut_kq_issue_tops",
+        "smalllut_mixedpv_issue_tops",
+        "smalllut_k_compact_read_gbps",
+        "smalllut_v_compact_read_gbps",
+        "smalllut_v_small_lut_read_gbps",
+        "smalllut_lut_bytes",
         "kq_ms",
         "pv_ms",
         "combined_ms",
@@ -495,6 +527,7 @@ def main() -> int:
         "bypassvdequant_ms",
         "predecodedb_ms",
         "lutb_ms",
+        "smalllut_ms",
         "v_predecode_ms",
         "device_name",
         "log",
@@ -664,6 +697,23 @@ def main() -> int:
                     v_read=row.get("lutb_v_compact_read_gbps", ""),
                     v_lut_read=row.get("lutb_v_lut_read_gbps", ""),
                     lut_bytes=row.get("lutb_lut_bytes", ""),
+                )
+            )
+        if "smalllut_total_tops" in row:
+            lines.append(
+                "threads={threads} smalllut_total_tops={total} "
+                "useful_mtp_smalllut_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_read_gbps={v_read} "
+                "v_small_lut_read_gbps={v_lut_read} small_lut_bytes={lut_bytes}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("smalllut_total_tops", ""),
+                    useful_total=row.get("smalllut_useful_mtp_total_tops", ""),
+                    kq_issue=row.get("smalllut_kq_issue_tops", ""),
+                    mixedpv=row.get("smalllut_mixedpv_issue_tops", ""),
+                    k_read=row.get("smalllut_k_compact_read_gbps", ""),
+                    v_read=row.get("smalllut_v_compact_read_gbps", ""),
+                    v_lut_read=row.get("smalllut_v_small_lut_read_gbps", ""),
+                    lut_bytes=row.get("smalllut_lut_bytes", ""),
                 )
             )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
