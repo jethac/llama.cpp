@@ -603,6 +603,143 @@ __global__ void mixedpv_stripmine_kernel(
 #endif
 }
 
+__global__ void mixedpv_stagehalf_kernel(
+        const block_nvfp4 * q,
+        const block_nvfp4 * k,
+        const block_nvfp4 * v,
+        size_t              block_mask,
+        float *             out,
+        uint64_t            iters) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && __CUDA_ARCH__ < 1300
+    constexpr int nfrags = 256 / QK_NVFP4;
+    constexpr int k_tiles = 64;
+    constexpr int groups_per_frag = QK_NVFP4 / 8;
+    constexpr int stage_entries_per_warp = nfrags * 4 * 32 * 2;
+
+    extern __shared__ uint32_t smem[];
+
+    const int lane = threadIdx.x & 31;
+    const int warp_in_block = threadIdx.x >> 5;
+    const int warp = ((int) blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    uint32_t * warp_stage = smem + (size_t) warp_in_block * stage_entries_per_warp;
+
+    int q_a[nfrags][4];
+    uint32_t q_scale[nfrags];
+
+#pragma unroll
+    for (int frag = 0; frag < nfrags; ++frag) {
+        const size_t q_idx = (((size_t) warp * (size_t) nfrags + (size_t) frag) * 32u + (size_t) lane) & block_mask;
+        const block_nvfp4 q_blk = q[q_idx];
+        const uint32_t * q_qs = reinterpret_cast<const uint32_t *>(q_blk.qs);
+        q_a[frag][0] = (int) q_qs[(lane + 0) & 7];
+        q_a[frag][1] = (int) q_qs[(lane + 1) & 7];
+        q_a[frag][2] = (int) q_qs[(lane + 2) & 7];
+        q_a[frag][3] = (int) q_qs[(lane + 3) & 7];
+        q_scale[frag] = *reinterpret_cast<const uint32_t *>(q_blk.d);
+    }
+
+    float kq0 = 0.0f;
+    float kq1 = 0.0f;
+    float kq2 = 0.0f;
+    float kq3 = 0.0f;
+    float pv0 = 0.0f;
+    float pv1 = 0.0f;
+    float pv2 = 0.0f;
+    float pv3 = 0.0f;
+    float row_m0 = -64.0f;
+    float row_l0 = 0.0f;
+    float sink = 0.0f;
+
+    for (uint64_t i = 0; i < iters; ++i) {
+#pragma unroll
+        for (int tile = 0; tile < k_tiles; ++tile) {
+#pragma unroll
+            for (int frag = 0; frag < nfrags; ++frag) {
+                const size_t k_idx =
+                    (((size_t) warp + (size_t) i * (size_t) gridDim.x) * (size_t) k_tiles * (size_t) nfrags * 32u +
+                     (size_t) tile * (size_t) nfrags * 32u + (size_t) frag * 32u + (size_t) lane) & block_mask;
+
+                const block_nvfp4 k_blk = k[k_idx];
+                const uint32_t * k_qs = reinterpret_cast<const uint32_t *>(k_blk.qs);
+                const int bx0 = (int) k_qs[(lane + 0) & 7];
+                const int bx1 = (int) k_qs[(lane + 1) & 7];
+                const uint32_t k_scale = *reinterpret_cast<const uint32_t *>(k_blk.d);
+                kq_mma_accumulate(q_a[frag][0], q_a[frag][1], q_a[frag][2], q_a[frag][3], bx0, bx1, q_scale[frag], k_scale, kq0, kq1, kq2, kq3);
+            }
+
+            const int q_row = lane & 15;
+            const int base_pos = (int) (i & 1023u);
+            const bool causal = tile <= base_pos + q_row;
+            const bool swa = tile + 1024 >= base_pos + q_row;
+            const float score = (causal && swa) ? (kq0 + kq1 + kq2 + kq3) * 0.000244140625f : -64.0f;
+            const float next_m0 = fmaxf(row_m0, score);
+            const float alpha0 = row_l0 == 0.0f ? 0.0f : exp2f(row_m0 - next_m0);
+            row_l0 = row_l0 * alpha0 + exp2f(score - next_m0);
+            row_m0 = next_m0;
+
+            const float p_base = 1.0f / (row_l0 + 1.0f);
+            const uint32_t pax0 = half2_bits(__floats2half2_rn(p_base, p_base * 0.9375f));
+            const uint32_t pax1 = half2_bits(__floats2half2_rn(p_base * 0.875f, p_base * 0.8125f));
+            const uint32_t pax2 = half2_bits(__floats2half2_rn(p_base * 0.7500f, p_base * 0.6875f));
+            const uint32_t pax3 = half2_bits(__floats2half2_rn(p_base * 0.6250f, p_base * 0.5625f));
+
+            const size_t row_base = (((size_t) warp + (size_t) i * (size_t) gridDim.x) * (size_t) k_tiles * 64u +
+                                     (size_t) tile * 64u) & block_mask;
+
+#pragma unroll
+            for (int group = 0; group < groups_per_frag; ++group) {
+#pragma unroll
+                for (int frag = 0; frag < nfrags; ++frag) {
+                    const block_nvfp4 blk0 = v[(((row_base + (size_t) (2 * lane + 0)) * (size_t) nfrags) + (size_t) frag) & block_mask];
+                    const block_nvfp4 blk1 = v[(((row_base + (size_t) (2 * lane + 1)) * (size_t) nfrags) + (size_t) frag) & block_mask];
+                    const uint32_t * v0 = reinterpret_cast<const uint32_t *>(blk0.qs);
+                    const uint32_t * v1 = reinterpret_cast<const uint32_t *>(blk1.qs);
+                    const uint32_t word0 = v0[group];
+                    const uint32_t word1 = v1[group];
+                    const float d0 = ue4m3_to_fp32(blk0.d[group / 2]);
+                    const float d1 = ue4m3_to_fp32(blk1.d[group / 2]);
+
+#pragma unroll
+                    for (int kk = 0; kk < 4; ++kk) {
+                        const uint8_t q0b = (uint8_t) (word0 >> (8 * kk));
+                        const uint8_t q1b = (uint8_t) (word1 >> (8 * kk));
+                        const size_t stage_idx = (((size_t) frag * 4u + (size_t) kk) * 32u + (size_t) lane) * 2u;
+                        warp_stage[stage_idx + 0] = half2_bits(dequant_nvfp4_byte_to_half2(q0b, d0));
+                        warp_stage[stage_idx + 1] = half2_bits(dequant_nvfp4_byte_to_half2(q1b, d1));
+                    }
+                }
+
+                __syncwarp();
+
+#pragma unroll
+                for (int frag = 0; frag < nfrags; ++frag) {
+#pragma unroll
+                    for (int kk = 0; kk < 4; ++kk) {
+                        const size_t stage_idx = (((size_t) frag * 4u + (size_t) kk) * 32u + (size_t) lane) * 2u;
+                        const uint32_t bx0 = warp_stage[stage_idx + 0];
+                        const uint32_t bx1 = warp_stage[stage_idx + 1];
+                        pv_mma_accumulate(pax0, pax1, pax2, pax3, bx0, bx1, pv0, pv1, pv2, pv3);
+                    }
+
+                    sink += (pv0 + pv1 + pv2 + pv3) * (float) (frag * groups_per_frag + group + 1) * 0.0000001f;
+                }
+
+                __syncwarp();
+            }
+        }
+    }
+
+    if (lane == 0) {
+        out[warp] = kq0 + kq1 + kq2 + kq3 + pv0 + pv1 + pv2 + pv3 + row_m0 + row_l0 + sink;
+    }
+#else
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        out[0] = 0.0f;
+    }
+    (void) q; (void) k; (void) v; (void) block_mask; (void) out; (void) iters;
+#endif
+}
+
 static float time_events(cudaEvent_t start, cudaEvent_t stop) {
     CUDA_CHECK(cudaEventSynchronize(stop));
     float ms = 0.0f;
@@ -614,19 +751,61 @@ static double useful_mtp_fraction(const bench_config & cfg) {
     return (double) cfg.mtp_rows / 16.0;
 }
 
-static int print_occupancy(const bench_config & cfg, const cudaDeviceProp & prop, const char * label, const void * kernel) {
+static int print_occupancy(
+        const bench_config & cfg,
+        const cudaDeviceProp & prop,
+        const char * label,
+        const void * kernel,
+        size_t dynamic_shared_bytes = 0) {
+    if (dynamic_shared_bytes > (size_t) prop.sharedMemPerBlock) {
+        const size_t optin_limit = prop.sharedMemPerBlockOptin > 0 ? (size_t) prop.sharedMemPerBlockOptin : (size_t) prop.sharedMemPerBlock;
+        if (dynamic_shared_bytes > optin_limit) {
+            std::printf("%s occupancy: active_blocks_per_sm=0 active_warps_per_sm=0 occupancy=0.0%% shared=%.3f KiB\n",
+                        label, (double) dynamic_shared_bytes / 1024.0);
+            std::printf("%s: skipped reason=dynamic shared memory %.3f KiB exceeds device opt-in limit %.3f KiB\n",
+                        label, (double) dynamic_shared_bytes / 1024.0, (double) optin_limit / 1024.0);
+            return 0;
+        }
+
+        const cudaError_t attr_err = cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) dynamic_shared_bytes);
+        if (attr_err != cudaSuccess) {
+            std::printf("%s occupancy: active_blocks_per_sm=0 active_warps_per_sm=0 occupancy=0.0%% shared=%.3f KiB\n",
+                        label, (double) dynamic_shared_bytes / 1024.0);
+            std::printf("%s: skipped reason=cudaFuncSetAttribute(MaxDynamicSharedMemorySize=%.3f KiB) failed: %s\n",
+                        label, (double) dynamic_shared_bytes / 1024.0, cudaGetErrorString(attr_err));
+            return 0;
+        }
+    }
+
     int active_blocks_per_sm = 0;
-    CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_per_sm, kernel, cfg.threads, 0));
+    CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_per_sm, kernel, cfg.threads, dynamic_shared_bytes));
     const int active_warps_per_sm = active_blocks_per_sm * (cfg.threads / 32);
     const double occupancy = prop.maxThreadsPerMultiProcessor > 0 ?
         (double) active_blocks_per_sm * (double) cfg.threads / (double) prop.maxThreadsPerMultiProcessor : 0.0;
-    std::printf("%s occupancy: active_blocks_per_sm=%d active_warps_per_sm=%d occupancy=%.1f%% shared=0.000 KiB\n",
-                label, active_blocks_per_sm, active_warps_per_sm, 100.0 * occupancy);
+    std::printf("%s occupancy: active_blocks_per_sm=%d active_warps_per_sm=%d occupancy=%.1f%% shared=%.3f KiB\n",
+                label, active_blocks_per_sm, active_warps_per_sm, 100.0 * occupancy, (double) dynamic_shared_bytes / 1024.0);
     return active_blocks_per_sm;
+}
+
+static size_t stagehalf_shared_bytes(const bench_config & cfg) {
+    constexpr int nfrags = 256 / QK_NVFP4;
+    constexpr int stage_entries_per_warp = nfrags * 4 * 32 * 2;
+    return (size_t) (cfg.threads / 32) * (size_t) stage_entries_per_warp * sizeof(uint32_t);
 }
 
 template <int pv_groups>
 static int run_stripmine_benchmark(
+        const bench_config & cfg,
+        const cudaDeviceProp & prop,
+        const block_nvfp4 * q,
+        const block_nvfp4 * k,
+        const block_nvfp4 * v,
+        size_t n_blocks,
+        size_t n_warps,
+        float * out);
+
+static int run_stagehalf_benchmark(
         const bench_config & cfg,
         const cudaDeviceProp & prop,
         const block_nvfp4 * q,
@@ -774,6 +953,7 @@ static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, 
     run_stripmine_benchmark<1>(cfg, prop, q, k, v, n_blocks, n_warps, out);
     run_stripmine_benchmark<2>(cfg, prop, q, k, v, n_blocks, n_warps, out);
     run_stripmine_benchmark<4>(cfg, prop, q, k, v, n_blocks, n_warps, out);
+    run_stagehalf_benchmark(cfg, prop, q, k, v, n_blocks, n_warps, out);
 
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
@@ -842,6 +1022,73 @@ static int run_stripmine_benchmark(
                 v_compact_gb / seconds,
                 (double) pv_groups / (double) full_groups_per_frag,
                 pv_groups,
+                n_blocks,
+                n_warps,
+                cfg.iters,
+                ms);
+
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    return 0;
+}
+
+static int run_stagehalf_benchmark(
+        const bench_config & cfg,
+        const cudaDeviceProp & prop,
+        const block_nvfp4 * q,
+        const block_nvfp4 * k,
+        const block_nvfp4 * v,
+        const size_t n_blocks,
+        const size_t n_warps,
+        float * out) {
+    constexpr int nfrags = 256 / QK_NVFP4;
+    constexpr int k_tiles = 64;
+    constexpr int groups_per_frag = QK_NVFP4 / 8;
+    constexpr int stage_entries_per_warp = nfrags * 4 * 32 * 2;
+
+    const char * label = "combined256_stagehalf";
+    const size_t shared_bytes = stagehalf_shared_bytes(cfg);
+    const int active = print_occupancy(cfg, prop, label, (const void *) mixedpv_stagehalf_kernel, shared_bytes);
+    if (active == 0) {
+        std::printf("%s: skipped reason=kernel has zero active blocks for threads=%d\n", label, cfg.threads);
+        return 0;
+    }
+
+    mixedpv_stagehalf_kernel<<<cfg.blocks, cfg.threads, shared_bytes>>>(q, k, v, n_blocks - 1, out, 2);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    cudaEvent_t start;
+    cudaEvent_t stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start));
+    mixedpv_stagehalf_kernel<<<cfg.blocks, cfg.threads, shared_bytes>>>(q, k, v, n_blocks - 1, out, cfg.iters);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventRecord(stop));
+    const float ms = time_events(start, stop);
+
+    const double seconds = ms / 1000.0;
+    const double kq_ops = (double) n_warps * (double) cfg.iters * (double) k_tiles * (double) nfrags * 2.0 * 16.0 * 8.0 * 64.0;
+    const double pv_ops = (double) n_warps * (double) cfg.iters * (double) k_tiles * (double) nfrags *
+                          (double) groups_per_frag * 4.0 * 2.0 * 16.0 * 8.0 * 16.0;
+    const double k_compact_gb = (double) n_warps * (double) cfg.iters * (double) k_tiles * (double) nfrags * 32.0 * (double) sizeof(block_nvfp4) / 1.0e9;
+    const double v_compact_gb = (double) n_warps * (double) cfg.iters * (double) k_tiles * 64.0 *
+                               (double) nfrags * (double) sizeof(block_nvfp4) / 1.0e9;
+    const double stage_rw_gb = (double) n_warps * (double) cfg.iters * (double) k_tiles *
+                               (double) groups_per_frag * (double) stage_entries_per_warp *
+                               (double) sizeof(uint32_t) * 2.0 / 1.0e9;
+
+    std::printf("%s: %.3f modeled-total-TOPS  %.3f useful-mtp-modeled-total-TOPS  %.3f KQ-issue-TOPS  %.3f mixedPV-issue-TOPS  %.3f GB/s-K-compact-read  %.3f GB/s-V-compact-read  %.3f GB/s-shared-stage-rw  shared=%.3f KiB blocks=%zu warps=%zu iters=%" PRIu64 " time=%.3f ms\n",
+                label,
+                (kq_ops + pv_ops) / seconds / 1.0e12,
+                (kq_ops + pv_ops) / seconds / 1.0e12 * useful_mtp_fraction(cfg),
+                kq_ops / seconds / 1.0e12,
+                pv_ops / seconds / 1.0e12,
+                k_compact_gb / seconds,
+                v_compact_gb / seconds,
+                stage_rw_gb / seconds,
+                (double) shared_bytes / 1024.0,
                 n_blocks,
                 n_warps,
                 cfg.iters,

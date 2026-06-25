@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -187,6 +187,29 @@ def parse_log(path: Path) -> dict[str, object]:
             row[f"{prefix}_ms"] = float(match.group(14))
             continue
 
+        match = re.match(
+            r"^combined256_stagehalf:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
+            r"([0-9.]+)\s+GB/s-V-compact-read\s+([0-9.]+)\s+GB/s-shared-stage-rw\s+"
+            r"shared=([0-9.]+)\s+KiB\s+blocks=(\d+)\s+warps=(\d+)\s+iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["stagehalf_total_tops"] = float(match.group(1))
+            row["stagehalf_useful_mtp_total_tops"] = float(match.group(2))
+            row["stagehalf_kq_issue_tops"] = float(match.group(3))
+            row["stagehalf_mixedpv_issue_tops"] = float(match.group(4))
+            row["stagehalf_k_compact_read_gbps"] = float(match.group(5))
+            row["stagehalf_v_compact_read_gbps"] = float(match.group(6))
+            row["stagehalf_shared_stage_rw_gbps"] = float(match.group(7))
+            row["stagehalf_shared_kib"] = float(match.group(8))
+            row["stagehalf_blocks"] = int(match.group(9))
+            row["stagehalf_warps"] = int(match.group(10))
+            row["stagehalf_iters"] = int(match.group(11))
+            row["stagehalf_ms"] = float(match.group(12))
+            continue
+
     return row
 
 
@@ -284,6 +307,8 @@ def main() -> int:
         "combined256_stripmine_g1_occupancy_pct",
         "combined256_stripmine_g2_occupancy_pct",
         "combined256_stripmine_g4_occupancy_pct",
+        "combined256_stagehalf_occupancy_pct",
+        "combined256_stagehalf_shared_kib",
         "stripmine_g1_measured_total_tops",
         "stripmine_g1_useful_mtp_measured_total_tops",
         "stripmine_g1_kq_issue_tops",
@@ -305,9 +330,18 @@ def main() -> int:
         "stripmine_g4_projected_fullpv_tops",
         "stripmine_g4_k_compact_read_gbps",
         "stripmine_g4_v_compact_read_gbps",
+        "stagehalf_total_tops",
+        "stagehalf_useful_mtp_total_tops",
+        "stagehalf_kq_issue_tops",
+        "stagehalf_mixedpv_issue_tops",
+        "stagehalf_k_compact_read_gbps",
+        "stagehalf_v_compact_read_gbps",
+        "stagehalf_shared_stage_rw_gbps",
+        "stagehalf_shared_kib",
         "kq_ms",
         "pv_ms",
         "combined_ms",
+        "stagehalf_ms",
         "device_name",
         "log",
     ]
@@ -396,6 +430,23 @@ def main() -> int:
                     projected_fullpv=row.get(f"{prefix}_projected_fullpv_tops", ""),
                     k_read=row.get(f"{prefix}_k_compact_read_gbps", ""),
                     v_read=row.get(f"{prefix}_v_compact_read_gbps", ""),
+                )
+            )
+        if "stagehalf_total_tops" in row:
+            lines.append(
+                "threads={threads} stagehalf_total_tops={total} "
+                "useful_mtp_stagehalf_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_read_gbps={v_read} "
+                "shared_stage_rw_gbps={shared_rw} shared_kib={shared_kib}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("stagehalf_total_tops", ""),
+                    useful_total=row.get("stagehalf_useful_mtp_total_tops", ""),
+                    kq_issue=row.get("stagehalf_kq_issue_tops", ""),
+                    mixedpv=row.get("stagehalf_mixedpv_issue_tops", ""),
+                    k_read=row.get("stagehalf_k_compact_read_gbps", ""),
+                    v_read=row.get("stagehalf_v_compact_read_gbps", ""),
+                    shared_rw=row.get("stagehalf_shared_stage_rw_gbps", ""),
+                    shared_kib=row.get("stagehalf_shared_kib", ""),
                 )
             )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
