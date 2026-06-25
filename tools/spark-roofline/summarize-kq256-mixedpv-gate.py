@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -104,6 +104,22 @@ def parse_log(path: Path) -> dict[str, object]:
             row["q_quant_blocks"] = int(match.group(4))
             row["q_quant_repeats"] = int(match.group(5))
             row["q_quant_ms"] = float(match.group(6))
+            continue
+
+        match = re.match(
+            r"^v_predecode_bready:\s+([0-9.]+)\s+GB/s-compact-read\s+([0-9.]+)\s+GB/s-bready-write\s+"
+            r"([0-9.]+)\s+GB/s-total\s+([0-9.]+)\s+GB-bready-once\s+blocks=(\d+)\s+repeats=(\d+)\s+"
+            r"time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["v_predecode_compact_read_gbps"] = float(match.group(1))
+            row["v_predecode_bready_write_gbps"] = float(match.group(2))
+            row["v_predecode_total_gbps"] = float(match.group(3))
+            row["v_predecode_bready_once_gb"] = float(match.group(4))
+            row["v_predecode_blocks"] = int(match.group(5))
+            row["v_predecode_repeats"] = int(match.group(6))
+            row["v_predecode_ms"] = float(match.group(7))
             continue
 
         match = re.match(
@@ -252,6 +268,30 @@ def parse_log(path: Path) -> dict[str, object]:
             row["bypassvdequant_ms"] = float(match.group(10))
             continue
 
+        match = re.match(
+            r"^combined256_predecodedb:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+effective-with-predecode-TOPS\s+"
+            r"([0-9.]+)\s+KQ-issue-TOPS\s+([0-9.]+)\s+mixedPV-issue-TOPS\s+"
+            r"([0-9.]+)\s+GB/s-K-compact-read\s+([0-9.]+)\s+GB/s-V-bready-read\s+"
+            r"predecode_once_ms=([0-9.]+)\s+blocks=(\d+)\s+warps=(\d+)\s+"
+            r"iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["predecodedb_total_tops"] = float(match.group(1))
+            row["predecodedb_useful_mtp_total_tops"] = float(match.group(2))
+            row["predecodedb_effective_with_predecode_tops"] = float(match.group(3))
+            row["predecodedb_kq_issue_tops"] = float(match.group(4))
+            row["predecodedb_mixedpv_issue_tops"] = float(match.group(5))
+            row["predecodedb_k_compact_read_gbps"] = float(match.group(6))
+            row["predecodedb_v_bready_read_gbps"] = float(match.group(7))
+            row["predecodedb_predecode_once_ms"] = float(match.group(8))
+            row["predecodedb_blocks"] = int(match.group(9))
+            row["predecodedb_warps"] = int(match.group(10))
+            row["predecodedb_iters"] = int(match.group(11))
+            row["predecodedb_ms"] = float(match.group(12))
+            continue
+
     return row
 
 
@@ -353,6 +393,11 @@ def main() -> int:
         "combined256_stagehalf_shared_kib",
         "combined256_localacc_occupancy_pct",
         "combined256_bypassvdequant_occupancy_pct",
+        "combined256_predecodedb_occupancy_pct",
+        "v_predecode_compact_read_gbps",
+        "v_predecode_bready_write_gbps",
+        "v_predecode_total_gbps",
+        "v_predecode_bready_once_gb",
         "stripmine_g1_measured_total_tops",
         "stripmine_g1_useful_mtp_measured_total_tops",
         "stripmine_g1_kq_issue_tops",
@@ -394,12 +439,22 @@ def main() -> int:
         "bypassvdequant_mixedpv_issue_tops",
         "bypassvdequant_k_compact_read_gbps",
         "bypassvdequant_v_payload_read_gbps",
+        "predecodedb_total_tops",
+        "predecodedb_useful_mtp_total_tops",
+        "predecodedb_effective_with_predecode_tops",
+        "predecodedb_kq_issue_tops",
+        "predecodedb_mixedpv_issue_tops",
+        "predecodedb_k_compact_read_gbps",
+        "predecodedb_v_bready_read_gbps",
+        "predecodedb_predecode_once_ms",
         "kq_ms",
         "pv_ms",
         "combined_ms",
         "stagehalf_ms",
         "localacc_ms",
         "bypassvdequant_ms",
+        "predecodedb_ms",
+        "v_predecode_ms",
         "device_name",
         "log",
     ]
@@ -533,6 +588,24 @@ def main() -> int:
                     mixedpv=row.get("bypassvdequant_mixedpv_issue_tops", ""),
                     k_read=row.get("bypassvdequant_k_compact_read_gbps", ""),
                     v_read=row.get("bypassvdequant_v_payload_read_gbps", ""),
+                )
+            )
+        if "predecodedb_total_tops" in row:
+            lines.append(
+                "threads={threads} predecodedb_total_tops={total} "
+                "useful_mtp_predecodedb_total_tops={useful_total} "
+                "effective_with_predecode_tops={effective} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_bready_read_gbps={v_read} "
+                "predecode_once_ms={predecode_once}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("predecodedb_total_tops", ""),
+                    useful_total=row.get("predecodedb_useful_mtp_total_tops", ""),
+                    effective=row.get("predecodedb_effective_with_predecode_tops", ""),
+                    kq_issue=row.get("predecodedb_kq_issue_tops", ""),
+                    mixedpv=row.get("predecodedb_mixedpv_issue_tops", ""),
+                    k_read=row.get("predecodedb_k_compact_read_gbps", ""),
+                    v_read=row.get("predecodedb_v_bready_read_gbps", ""),
+                    predecode_once=row.get("predecodedb_predecode_once_ms", ""),
                 )
             )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
