@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     verify.add_argument("--require-go", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-ncu", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-ncu-threads", help="Pass through to verify-kq256-artifacts.py")
+    verify.add_argument("--require-git-head", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-diagnostics", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-arch", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-compute-cap", help="Pass through to verify-kq256-artifacts.py")
@@ -83,6 +84,7 @@ def run_verifier(
     require_go: bool = False,
     require_ncu: bool = False,
     require_ncu_threads: str | None = None,
+    require_git_head: str | None = None,
     require_host_diagnostics: bool = False,
     require_host_arch: str | None = None,
     require_host_compute_cap: str | None = None,
@@ -103,6 +105,8 @@ def run_verifier(
         cmd.append("--require-ncu")
     if require_ncu_threads:
         cmd.extend(["--require-ncu-threads", require_ncu_threads])
+    if require_git_head:
+        cmd.extend(["--require-git-head", require_git_head])
     if require_host_diagnostics:
         cmd.append("--require-host-diagnostics")
     if require_host_arch:
@@ -193,6 +197,7 @@ def verify_bundle(
     require_go: bool,
     require_ncu: bool,
     require_ncu_threads: str | None,
+    require_git_head: str | None,
     require_host_diagnostics: bool,
     require_host_arch: str | None,
     require_host_compute_cap: str | None,
@@ -242,6 +247,7 @@ def verify_bundle(
                 require_go=require_go,
                 require_ncu=require_ncu,
                 require_ncu_threads=require_ncu_threads,
+                require_git_head=require_git_head,
                 require_host_diagnostics=require_host_diagnostics,
                 require_host_arch=require_host_arch,
                 require_host_compute_cap=require_host_compute_cap,
@@ -277,6 +283,7 @@ def main() -> int:
             args.require_go,
             args.require_ncu,
             args.require_ncu_threads,
+            args.require_git_head,
             args.require_host_diagnostics,
             args.require_host_arch,
             args.require_host_compute_cap,

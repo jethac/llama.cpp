@@ -118,6 +118,7 @@ run_cmd() {
 gate_script="$repo_root/tools/spark-roofline/run-spark-kq256-gate.sh"
 self_test="$repo_root/tools/spark-roofline/test-kq256-handoff-tools.py"
 bundler="$repo_root/tools/spark-roofline/bundle-kq256-artifacts.py"
+git_head="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)"
 
 write_handoff_summary() {
     local exit_code="$1"
@@ -141,6 +142,7 @@ write_handoff_summary() {
         --require-go
         --require-ncu
         --require-ncu-threads "$ncu_threads"
+        --require-git-head "$git_head"
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
@@ -154,6 +156,7 @@ write_handoff_summary() {
         --require-go
         --require-ncu
         --require-ncu-threads "$ncu_threads"
+        --require-git-head "$git_head"
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
@@ -170,6 +173,7 @@ write_handoff_summary() {
         echo "last_stage=$handoff_stage"
         echo "dry_run=$dry_run"
         echo "repo_root=$repo_root"
+        echo "git_head=$git_head"
         echo "build_dir=$build_dir"
         echo "preflight_dir=$preflight_dir"
         echo "out_dir=$out_dir"
@@ -200,6 +204,7 @@ finish_handoff() {
 trap finish_handoff EXIT
 
 echo "repo_root=$repo_root"
+echo "git_head=$git_head"
 echo "build_dir=$build_dir"
 echo "preflight_dir=$preflight_dir"
 echo "out_dir=$out_dir"
@@ -273,6 +278,7 @@ run_cmd "$python_bin" "$bundler" verify \
     --require-go \
     --require-ncu \
     --require-ncu-threads "$ncu_threads" \
+    --require-git-head "$git_head" \
     --require-host-diagnostics \
     --require-host-arch 121a \
     --require-host-compute-cap 12.1 \

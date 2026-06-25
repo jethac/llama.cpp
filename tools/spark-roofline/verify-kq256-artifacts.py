@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-ncu", action="store_true", help="Require at least one passing NCU evidence JSON")
     parser.add_argument("--require-ncu-threads", help="Require complete passing NCU evidence for these comma/space-separated thread counts")
     parser.add_argument("--require-manifest", action="store_true", help="Fail if artifact-manifest.tsv is missing")
+    parser.add_argument("--require-git-head", help="Require summary.txt git_head to match this commit SHA")
     parser.add_argument("--require-host-diagnostics", action="store_true", help="Require host-diagnostics.log and summary.txt pointer")
     parser.add_argument("--require-host-arch", help="Require summary.txt/host-diagnostics.log to show this requested CUDA arch, e.g. 121a")
     parser.add_argument("--require-host-compute-cap", help="Require host-diagnostics.log to show this CUDA compute capability, e.g. 12.1")
@@ -50,6 +51,10 @@ def normalize_list(value: str | None) -> list[str]:
     if not value:
         return []
     return [item for item in value.replace(",", " ").split() if item]
+
+
+def normalize_git_sha(value: str) -> str:
+    return value.strip().lower()
 
 
 def parse_version_pair(value: str) -> tuple[int, int] | None:
@@ -450,6 +455,14 @@ def main() -> int:
     if args.require_go and runner_exit_code != "0":
         failures.append(f"runner exit_code is not 0: {runner_exit_code!r}")
 
+    git_head = normalize_git_sha(runner_summary.get("git_head", ""))
+    required_git_head = normalize_git_sha(args.require_git_head or "")
+    if required_git_head:
+        if not git_head:
+            failures.append("summary.txt missing git_head")
+        elif git_head != required_git_head:
+            failures.append(f"git_head mismatch: expected {required_git_head}, got {git_head}")
+
     if args.require_ncu and ncu_info["ncu_passed_files"] < 1:
         failures.append("no passing NCU FP4 evidence JSON found")
     if args.require_ncu and ncu_info["ncu_complete_passed_sets"] < 1:
@@ -483,6 +496,8 @@ def main() -> int:
         f"passed={str(passed).lower()}",
         f"gate_decision={gate_decision}",
         f"runner_exit_code={runner_exit_code}",
+        f"git_head={git_head}",
+        f"git_required_head={required_git_head}",
         f"manifest_present={str(manifest_info['manifest_present']).lower()}",
         f"manifest_rows={manifest_info['manifest_rows']}",
         f"build_configure_log_present={str(build_info['build_configure_log_present']).lower()}",

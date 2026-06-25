@@ -20,6 +20,7 @@ ANALYZER = SCRIPT_DIR / "analyze-ncu-fp4-evidence.py"
 SUMMARIZER = SCRIPT_DIR / "summarize-kq256-gate.py"
 VERIFIER = SCRIPT_DIR / "verify-kq256-artifacts.py"
 BUNDLER = SCRIPT_DIR / "bundle-kq256-artifacts.py"
+SYNTHETIC_GIT_HEAD = "1234567890abcdef1234567890abcdef12345678"
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,6 +146,7 @@ def build_complete_artifact(root: Path) -> Path:
             [
                 "arch=121a",
                 "device=0",
+                f"git_head={SYNTHETIC_GIT_HEAD}",
                 f"host_diagnostics={artifact_dir / 'host-diagnostics.log'}",
                 "exit_code=0",
             ]
@@ -223,6 +225,8 @@ def main() -> int:
             "--require-ncu",
             "--require-ncu-threads",
             "256",
+            "--require-git-head",
+            SYNTHETIC_GIT_HEAD,
             "--require-host-diagnostics",
             "--require-host-arch",
             "121a",
@@ -251,6 +255,8 @@ def main() -> int:
                 "--require-ncu",
                 "--require-ncu-threads",
                 "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -279,6 +285,8 @@ def main() -> int:
                 "--require-ncu",
                 "--require-ncu-threads",
                 "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -307,6 +315,8 @@ def main() -> int:
                 "--require-ncu",
                 "--require-ncu-threads",
                 "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -348,6 +358,9 @@ def main() -> int:
         wrong_ncu_threads = strict_verify + ["--require-ncu-threads", "128"]
         run(wrong_ncu_threads, expect=2)
 
+        wrong_git_head = strict_verify + ["--require-git-head", "0" * 40]
+        run(wrong_git_head, expect=2)
+
         wrong_build_arch = root / "synthetic-kq256-wrong-build-arch"
         shutil.copytree(artifact_dir, wrong_build_arch)
         (wrong_build_arch / "cmake-configure.log").write_text(
@@ -366,6 +379,8 @@ def main() -> int:
                 "--require-ncu",
                 "--require-ncu-threads",
                 "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -402,6 +417,8 @@ def main() -> int:
                 "--require-ncu",
                 "--require-ncu-threads",
                 "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -468,6 +485,8 @@ def main() -> int:
                 "--require-ncu",
                 "--require-ncu-threads",
                 "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",

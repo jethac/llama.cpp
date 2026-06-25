@@ -9,6 +9,7 @@ The D=256 KQ gate is green only when all are true:
 
 - the run is on the Spark `sm_121a` device;
 - `cmake-configure.log` proves the build used `CMAKE_CUDA_ARCHITECTURES=121a`;
+- `summary.txt` records the expected `git_head`;
 - `kq256-summary.json` reports `gate_decision=go`;
 - at least one Nsight Compute evidence JSON reports passing FP4-specific evidence;
 - the required Nsight thread shape, default `512`, has a complete passing artifact
@@ -63,6 +64,8 @@ The handoff summary is written on success, dry-run, and failure. It records
 `handoff_status`, `handoff_complete`, `exit_code`, `last_stage`, copy paths for
 the bundle, `.sha256` sidecar, and summary file, plus a strict copied-bundle
 verification command.
+That command includes the exact `git_head` from the checkout used on the Spark
+host, so copied results cannot accidentally verify against a different commit.
 
 A wrapper `--dry-run` is only a command plan. Its summary reports
 `handoff_status=planned` and `handoff_complete=false`; do not treat dry-run
@@ -286,6 +289,7 @@ python tools/spark-roofline/bundle-kq256-artifacts.py verify \
   --require-go \
   --require-ncu \
   --require-ncu-threads 512 \
+  --require-git-head <expected-git-head> \
   --require-host-diagnostics \
   --require-host-arch 121a \
   --require-host-compute-cap 12.1 \
@@ -300,6 +304,7 @@ The bundle verifier should report:
 passed=true
 gate_decision=go
 bundle_verified=true
+git_required_head=<expected-git-head>
 build_required_arch_matched=121a
 host_required_arch=121a
 host_required_compute_cap_matched=12.1
