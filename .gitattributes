@@ -1,1 +1,2 @@
-tools/spark-roofline/*.sh text eol=lf
+tools/CMakeLists.txt text eol=lf
+tools/spark-roofline/** text eol=lf
