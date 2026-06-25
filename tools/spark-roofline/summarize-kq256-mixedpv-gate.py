@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -158,6 +158,33 @@ def parse_log(path: Path) -> dict[str, object]:
             row["combined_warps"] = int(match.group(8))
             row["combined_iters"] = int(match.group(9))
             row["combined_ms"] = float(match.group(10))
+            continue
+
+        match = re.match(
+            r"^combined256_stripmine_g(\d+):\s+([0-9.]+)\s+measured-total-TOPS\s+"
+            r"([0-9.]+)\s+useful-mtp-measured-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+measured-mixedPV-TOPS\s+([0-9.]+)\s+projected-fullPV-TOPS-at-same-time\s+"
+            r"([0-9.]+)\s+GB/s-K-compact-read\s+([0-9.]+)\s+GB/s-V-compact-read\s+"
+            r"pv_group_fraction=([0-9.]+)\s+pv_groups=(\d+)\s+blocks=(\d+)\s+warps=(\d+)\s+"
+            r"iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            group = int(match.group(1))
+            prefix = f"stripmine_g{group}"
+            row[f"{prefix}_measured_total_tops"] = float(match.group(2))
+            row[f"{prefix}_useful_mtp_measured_total_tops"] = float(match.group(3))
+            row[f"{prefix}_kq_issue_tops"] = float(match.group(4))
+            row[f"{prefix}_measured_mixedpv_tops"] = float(match.group(5))
+            row[f"{prefix}_projected_fullpv_tops"] = float(match.group(6))
+            row[f"{prefix}_k_compact_read_gbps"] = float(match.group(7))
+            row[f"{prefix}_v_compact_read_gbps"] = float(match.group(8))
+            row[f"{prefix}_pv_group_fraction"] = float(match.group(9))
+            row[f"{prefix}_pv_groups"] = int(match.group(10))
+            row[f"{prefix}_blocks"] = int(match.group(11))
+            row[f"{prefix}_warps"] = int(match.group(12))
+            row[f"{prefix}_iters"] = int(match.group(13))
+            row[f"{prefix}_ms"] = float(match.group(14))
             continue
 
     return row
@@ -254,6 +281,30 @@ def main() -> int:
         "kq256_only_occupancy_pct",
         "pv256_mixed_occupancy_pct",
         "combined256_mixed_occupancy_pct",
+        "combined256_stripmine_g1_occupancy_pct",
+        "combined256_stripmine_g2_occupancy_pct",
+        "combined256_stripmine_g4_occupancy_pct",
+        "stripmine_g1_measured_total_tops",
+        "stripmine_g1_useful_mtp_measured_total_tops",
+        "stripmine_g1_kq_issue_tops",
+        "stripmine_g1_measured_mixedpv_tops",
+        "stripmine_g1_projected_fullpv_tops",
+        "stripmine_g1_k_compact_read_gbps",
+        "stripmine_g1_v_compact_read_gbps",
+        "stripmine_g2_measured_total_tops",
+        "stripmine_g2_useful_mtp_measured_total_tops",
+        "stripmine_g2_kq_issue_tops",
+        "stripmine_g2_measured_mixedpv_tops",
+        "stripmine_g2_projected_fullpv_tops",
+        "stripmine_g2_k_compact_read_gbps",
+        "stripmine_g2_v_compact_read_gbps",
+        "stripmine_g4_measured_total_tops",
+        "stripmine_g4_useful_mtp_measured_total_tops",
+        "stripmine_g4_kq_issue_tops",
+        "stripmine_g4_measured_mixedpv_tops",
+        "stripmine_g4_projected_fullpv_tops",
+        "stripmine_g4_k_compact_read_gbps",
+        "stripmine_g4_v_compact_read_gbps",
         "kq_ms",
         "pv_ms",
         "combined_ms",
@@ -327,6 +378,26 @@ def main() -> int:
                 sm=row.get("sm", ""),
             )
         )
+        for group in (1, 2, 4):
+            prefix = f"stripmine_g{group}"
+            if f"{prefix}_measured_total_tops" not in row:
+                continue
+            lines.append(
+                "threads={threads} stripmine_g={group} measured_total_tops={measured_total} "
+                "useful_mtp_measured_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "measured_mixedpv_tops={mixedpv} projected_fullpv_tops={projected_fullpv} "
+                "k_read_gbps={k_read} v_read_gbps={v_read}".format(
+                    threads=row.get("threads", ""),
+                    group=group,
+                    measured_total=row.get(f"{prefix}_measured_total_tops", ""),
+                    useful_total=row.get(f"{prefix}_useful_mtp_measured_total_tops", ""),
+                    kq_issue=row.get(f"{prefix}_kq_issue_tops", ""),
+                    mixedpv=row.get(f"{prefix}_measured_mixedpv_tops", ""),
+                    projected_fullpv=row.get(f"{prefix}_projected_fullpv_tops", ""),
+                    k_read=row.get(f"{prefix}_k_compact_read_gbps", ""),
+                    v_read=row.get(f"{prefix}_v_compact_read_gbps", ""),
+                )
+            )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     if failures:
