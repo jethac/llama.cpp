@@ -209,6 +209,7 @@ option(GGML_CUDA_FA_ALL_QUANTS              "ggml: compile all quants for FlashA
 option(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG      "ggml: enable non-shipping scalar NVFP4 FA correctness path" OFF)
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG          "ggml: enable non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP "ggml: use production-shaped multi-warp CTA in non-shipping tensor-core NVFP4 FA debug path" OFF)
+option(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV "ggml: use split-KV reduction in non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV "ggml: use scalar PV in non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ "ggml: use scalar KQ in non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
