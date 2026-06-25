@@ -25,7 +25,7 @@ static void spark_cuda_check(cudaError_t err, const char * file, int line) {
 struct bench_config {
     int      device   = 0;
     int      blocks   = 0;
-    int      threads  = 512;
+    int      threads  = 128;
     int      mtp_rows = 4;
     uint64_t iters    = 2000;
 };
@@ -39,7 +39,7 @@ static void print_usage(const char * exe) {
         "options:\n"
         "  --device N    CUDA device id (default: 0)\n"
         "  --blocks N    CUDA blocks (default: 4 * SM count)\n"
-        "  --threads N   CUDA threads per block (default: 512)\n"
+        "  --threads N   CUDA threads per block (default: 128)\n"
         "  --mtp-rows N  useful MTP verification rows in an m16 tile (default: 4)\n"
         "  --iters N     loop iterations per warp (default: 2000)\n"
         "  --help        print this help\n",
@@ -495,7 +495,7 @@ static double useful_mtp_fraction(const bench_config & cfg) {
     return (double) cfg.mtp_rows / 16.0;
 }
 
-static void print_occupancy(const bench_config & cfg, const cudaDeviceProp & prop, const char * label, const void * kernel) {
+static int print_occupancy(const bench_config & cfg, const cudaDeviceProp & prop, const char * label, const void * kernel) {
     int active_blocks_per_sm = 0;
     CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_per_sm, kernel, cfg.threads, 0));
     const int active_warps_per_sm = active_blocks_per_sm * (cfg.threads / 32);
@@ -503,6 +503,7 @@ static void print_occupancy(const bench_config & cfg, const cudaDeviceProp & pro
         (double) active_blocks_per_sm * (double) cfg.threads / (double) prop.maxThreadsPerMultiProcessor : 0.0;
     std::printf("%s occupancy: active_blocks_per_sm=%d active_warps_per_sm=%d occupancy=%.1f%% shared=0.000 KiB\n",
                 label, active_blocks_per_sm, active_warps_per_sm, 100.0 * occupancy);
+    return active_blocks_per_sm;
 }
 
 static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, int cc) {
@@ -518,9 +519,13 @@ static int run_benchmark(const bench_config & cfg, const cudaDeviceProp & prop, 
     constexpr int k_tiles = 64;
     constexpr int groups_per_frag = QK_NVFP4 / 8;
 
-    print_occupancy(cfg, prop, "kq256_only", (const void *) kq256_only_kernel);
-    print_occupancy(cfg, prop, "pv256_mixed", (const void *) mixedpv_kernel<false>);
-    print_occupancy(cfg, prop, "combined256_mixed", (const void *) mixedpv_kernel<true>);
+    const int kq_active = print_occupancy(cfg, prop, "kq256_only", (const void *) kq256_only_kernel);
+    const int pv_active = print_occupancy(cfg, prop, "pv256_mixed", (const void *) mixedpv_kernel<false>);
+    const int combined_active = print_occupancy(cfg, prop, "combined256_mixed", (const void *) mixedpv_kernel<true>);
+    if (kq_active == 0 || pv_active == 0 || combined_active == 0) {
+        std::printf("kq256_mixedpv: skipped reason=at least one required kernel has zero active blocks for threads=%d\n", cfg.threads);
+        return 2;
+    }
 
     const size_t n_threads = (size_t) cfg.blocks * (size_t) cfg.threads;
     const size_t n_warps = n_threads / 32;

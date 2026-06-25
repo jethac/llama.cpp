@@ -12,11 +12,11 @@ Options:
   --out-dir DIR         Artifact directory (default: stage timestamp under /tmp)
   --arch ARCH           CUDA architecture (default: 121a)
   --device N            CUDA device id passed to llama-spark-kq256-mixedpv (default: 0)
-  --threads LIST        Space/comma-separated thread counts (default: "128 256 512")
+  --threads LIST        Space/comma-separated thread counts (default: "128 256")
   --mtp-rows N          Useful MTP verification rows in m16 tile (default: 4)
   --iters N             Iterations for normal runs (default: 2000)
   --ncu-iters N         Iterations for Nsight runs (default: 10)
-  --ncu-threads LIST    Thread counts for Nsight runs (default: "512")
+  --ncu-threads LIST    Thread counts for Nsight runs (default: "256")
   --allow-proxy         Allow non-sm_121 devices for local proxy runs
   --preflight-only      Build/find executable, run one tiny device smoke, then exit
   --no-build            Skip CMake configure/build
@@ -48,11 +48,11 @@ build_dir="build-spark-sm121-kq256-mixedpv"
 out_dir=""
 arch="121a"
 device="0"
-threads="128 256 512"
+threads="128 256"
 mtp_rows="4"
 iters="2000"
 ncu_iters="10"
-ncu_threads="512"
+ncu_threads="256"
 do_build=1
 do_ncu=1
 dry_run=0
