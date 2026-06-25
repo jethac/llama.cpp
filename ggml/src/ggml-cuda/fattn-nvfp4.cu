@@ -40,6 +40,8 @@ struct fattn_nvfp4_mtp4_params {
     float2            * split_meta;
     int64_t             kv_split_size;
     int64_t             kv_split_count;
+    int64_t             kv_split_base;
+    int64_t             kv_split_active_count;
 #endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
 
     float scale;
@@ -103,6 +105,8 @@ static fattn_nvfp4_mtp4_params ggml_cuda_fattn_nvfp4_mtp4_make_params(const ggml
     params.split_meta    = nullptr;
     params.kv_split_size = 0;
     params.kv_split_count = 1;
+    params.kv_split_base = 0;
+    params.kv_split_active_count = 1;
 #endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
     params.scale = scale;
 
@@ -1543,7 +1547,12 @@ static __device__ __forceinline__ int64_t ggml_cuda_fattn_nvfp4_split_prob_idx(
         const int64_t                   q_head,
         const int64_t                   q_row,
         const int64_t                   kv_local) {
-    return ((((kv_split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows + q_row)
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+    const int64_t prob_split = kv_split - params.kv_split_base;
+#else
+    const int64_t prob_split = kv_split;
+#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+    return ((((prob_split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows + q_row)
         * params.kv_split_size + kv_local);
 }
 
@@ -1554,8 +1563,13 @@ __global__ void fattn_nvfp4_mtp4_split_kq_prob_kernel(const fattn_nvfp4_mtp4_par
     const int64_t q_row_block = (int64_t) blockIdx.x;
     const int64_t q_row_base  = q_row_block * FATTN_NVFP4_MTP4_ROWS;
     const int64_t q_head      = (int64_t) blockIdx.y;
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+    const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_active_count;
+    const int64_t kv_split    = params.kv_split_base + (int64_t) blockIdx.z - seq * params.kv_split_active_count;
+#else
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_count;
     const int64_t kv_split    = (int64_t) blockIdx.z - seq * params.kv_split_count;
+#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
     const int64_t kv_start    = kv_split * params.kv_split_size;
     const int64_t kv_end      = min(params.ne_kv_rows, kv_start + params.kv_split_size);
     const int64_t kv_count    = kv_end - kv_start;
@@ -1760,8 +1774,13 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
     const int64_t q_row_block = (int64_t) blockIdx.x;
     const int64_t q_row_base  = q_row_block * FATTN_NVFP4_MTP4_ROWS;
     const int64_t q_head      = (int64_t) blockIdx.y;
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+    const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_active_count;
+    const int64_t kv_split    = params.kv_split_base + (int64_t) blockIdx.z - seq * params.kv_split_active_count;
+#else
     const int64_t seq         = (int64_t) blockIdx.z / params.kv_split_count;
     const int64_t kv_split    = (int64_t) blockIdx.z - seq * params.kv_split_count;
+#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
     const int64_t kv_start    = kv_split * params.kv_split_size;
     const int64_t kv_end      = min(params.ne_kv_rows, kv_start + params.kv_split_size);
     const int64_t kv_count    = kv_end - kv_start;
@@ -2199,11 +2218,17 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 
     params.kv_split_size = FATTN_NVFP4_SPLIT_KV_ROWS;
     params.kv_split_count = (params.ne_kv_rows + params.kv_split_size - 1) / params.kv_split_size;
+    params.kv_split_base = 0;
+    params.kv_split_active_count = params.kv_split_count;
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+    params.kv_split_active_count =
+        min((int64_t) GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS, params.kv_split_count);
+#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
     params.split_partial = split_partial_alloc.alloc(
         (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim);
 #ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
     params.split_prob = split_prob_alloc.alloc(
-        (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.kv_split_size);
+        (size_t) params.kv_split_active_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.kv_split_size);
 #endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
     params.split_meta = split_meta_alloc.alloc(
         (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows);
@@ -2216,8 +2241,19 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 #if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED)
     const dim3 kq_prob_block(WARP_SIZE, 1, 1);
     const dim3 pv_block(FATTN_NVFP4_TC_PV_WARPS * WARP_SIZE, 1, 1);
+#if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
+    for (int64_t kv_split_base = 0; kv_split_base < params.kv_split_count; kv_split_base += params.kv_split_active_count) {
+        params.kv_split_base = kv_split_base;
+        params.kv_split_active_count =
+            min((int64_t) GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS, params.kv_split_count - kv_split_base);
+        const dim3 window_blocks_num(blocks_num.x, blocks_num.y, (uint32_t) (params.ne_seqs * params.kv_split_active_count));
+        fattn_nvfp4_mtp4_split_kq_prob_kernel<<<window_blocks_num, kq_prob_block, 0, ctx.stream()>>>(params);
+        fattn_nvfp4_mtp4_split_pv_from_prob_kernel<<<window_blocks_num, pv_block, 0, ctx.stream()>>>(params);
+    }
+#else
     fattn_nvfp4_mtp4_split_kq_prob_kernel<<<blocks_num, kq_prob_block, 0, ctx.stream()>>>(params);
     fattn_nvfp4_mtp4_split_pv_from_prob_kernel<<<blocks_num, pv_block, 0, ctx.stream()>>>(params);
+#endif // defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS)
 #else
     const dim3 block_dim(FATTN_NVFP4_TC_THREADS, 1, 1);
 #if defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS)

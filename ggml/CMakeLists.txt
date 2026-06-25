@@ -213,6 +213,7 @@ option(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV "ggml: use split-KV reduction in non
 set(GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV_ROWS "128" CACHE STRING "ggml: KV rows per split in non-shipping tensor-core NVFP4 FA split-KV debug path")
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_TWOPASS "ggml: use two-pass split-KV schedule in non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED "ggml: use separate KQ/prob and PV kernels in non-shipping tensor-core NVFP4 FA debug path" OFF)
+set(GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS "0" CACHE STRING "ggml: split windows per launch in non-shipping decoupled tensor-core NVFP4 FA debug path")
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV "ggml: use scalar PV in non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ "ggml: use scalar KQ in non-shipping tensor-core NVFP4 FA debug path" OFF)
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
