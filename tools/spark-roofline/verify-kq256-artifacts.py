@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-host-diagnostics", action="store_true", help="Require host-diagnostics.log and summary.txt pointer")
     parser.add_argument("--require-host-arch", help="Require summary.txt/host-diagnostics.log to show this requested CUDA arch, e.g. 121a")
     parser.add_argument("--require-host-compute-cap", help="Require host-diagnostics.log to show this CUDA compute capability, e.g. 12.1")
+    parser.add_argument("--require-build-arch", help="Require cmake-configure.log to show this CMAKE_CUDA_ARCHITECTURES value")
     parser.add_argument("--require-cuda-min", help="Require nvcc release at least this major.minor version, e.g. 12.8")
     parser.add_argument(
         "--reject-cuda-release",
@@ -224,6 +225,48 @@ def inspect_ncu(out_dir: Path, failures: list[str], require_complete: bool, mani
     }
 
 
+def inspect_build_logs(
+    out_dir: Path,
+    failures: list[str],
+    manifest_info: dict[str, object],
+    require_manifest: bool,
+    required_build_arch: str | None,
+) -> dict[str, object]:
+    configure_log = out_dir / "cmake-configure.log"
+    build_log = out_dir / "cmake-build.log"
+    configure_present = configure_log.is_file()
+    build_present = build_log.is_file()
+    matched_arch = ""
+
+    if required_build_arch:
+        if not configure_present:
+            failures.append("missing cmake-configure.log")
+        else:
+            text = configure_log.read_text(encoding="utf-8", errors="replace")
+            allowed_needles = [
+                f"CMAKE_CUDA_ARCHITECTURES={required_build_arch}",
+                f"CMAKE_CUDA_ARCHITECTURES:STRING={required_build_arch}",
+            ]
+            if any(needle in text for needle in allowed_needles):
+                matched_arch = required_build_arch
+            else:
+                failures.append(
+                    f"cmake-configure.log does not show CMAKE_CUDA_ARCHITECTURES={required_build_arch}"
+                )
+        if not build_present:
+            failures.append("missing cmake-build.log")
+        if require_manifest:
+            require_manifest_path(manifest_info, "cmake-configure.log", failures)
+            require_manifest_path(manifest_info, "cmake-build.log", failures)
+
+    return {
+        "build_configure_log_present": configure_present,
+        "build_log_present": build_present,
+        "build_required_arch": required_build_arch or "",
+        "build_required_arch_matched": matched_arch,
+    }
+
+
 def inspect_host_diagnostics(
     out_dir: Path,
     runner_summary: dict[str, str],
@@ -380,6 +423,13 @@ def main() -> int:
             require_manifest_path(manifest_info, "kq256-summary.csv", failures)
 
     ncu_info = inspect_ncu(args.dir, failures, require_complete=args.require_ncu, manifest_info=manifest_info, require_manifest=args.require_manifest)
+    build_info = inspect_build_logs(
+        args.dir,
+        failures,
+        manifest_info=manifest_info,
+        require_manifest=args.require_manifest,
+        required_build_arch=args.require_build_arch,
+    )
     host_diag_info = inspect_host_diagnostics(
         args.dir,
         runner_summary,
@@ -435,6 +485,10 @@ def main() -> int:
         f"runner_exit_code={runner_exit_code}",
         f"manifest_present={str(manifest_info['manifest_present']).lower()}",
         f"manifest_rows={manifest_info['manifest_rows']}",
+        f"build_configure_log_present={str(build_info['build_configure_log_present']).lower()}",
+        f"build_log_present={str(build_info['build_log_present']).lower()}",
+        f"build_required_arch={build_info['build_required_arch']}",
+        f"build_required_arch_matched={build_info['build_required_arch_matched']}",
         f"host_diagnostics_present={str(host_diag_info['host_diagnostics_present']).lower()}",
         f"host_diagnostics_summary_entry={host_diag_info['host_diagnostics_summary_entry']}",
         f"host_requested_arch={host_diag_info['host_requested_arch']}",

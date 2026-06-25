@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     verify.add_argument("--require-host-diagnostics", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-arch", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-compute-cap", help="Pass through to verify-kq256-artifacts.py")
+    verify.add_argument("--require-build-arch", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-cuda-min", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--reject-cuda-release", action="append", default=[], help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--keep-temp", action="store_true", help="Keep temporary extraction directory")
@@ -85,6 +86,7 @@ def run_verifier(
     require_host_diagnostics: bool = False,
     require_host_arch: str | None = None,
     require_host_compute_cap: str | None = None,
+    require_build_arch: str | None = None,
     require_cuda_min: str | None = None,
     reject_cuda_releases: list[str] | None = None,
 ) -> None:
@@ -107,6 +109,8 @@ def run_verifier(
         cmd.extend(["--require-host-arch", require_host_arch])
     if require_host_compute_cap:
         cmd.extend(["--require-host-compute-cap", require_host_compute_cap])
+    if require_build_arch:
+        cmd.extend(["--require-build-arch", require_build_arch])
     if require_cuda_min:
         cmd.extend(["--require-cuda-min", require_cuda_min])
     for release in reject_cuda_releases or []:
@@ -192,6 +196,7 @@ def verify_bundle(
     require_host_diagnostics: bool,
     require_host_arch: str | None,
     require_host_compute_cap: str | None,
+    require_build_arch: str | None,
     require_cuda_min: str | None,
     reject_cuda_releases: list[str],
     keep_temp: bool,
@@ -240,6 +245,7 @@ def verify_bundle(
                 require_host_diagnostics=require_host_diagnostics,
                 require_host_arch=require_host_arch,
                 require_host_compute_cap=require_host_compute_cap,
+                require_build_arch=require_build_arch,
                 require_cuda_min=require_cuda_min,
                 reject_cuda_releases=reject_cuda_releases,
             )
@@ -274,6 +280,7 @@ def main() -> int:
             args.require_host_diagnostics,
             args.require_host_arch,
             args.require_host_compute_cap,
+            args.require_build_arch,
             args.require_cuda_min,
             args.reject_cuda_release,
             args.keep_temp,

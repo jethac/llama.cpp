@@ -144,6 +144,7 @@ write_handoff_summary() {
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
+        --require-build-arch 121a
         --require-cuda-min 12.8
         --reject-cuda-release 13.1
     )
@@ -156,6 +157,7 @@ write_handoff_summary() {
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
+        --require-build-arch 121a
         --require-cuda-min 12.8
         --reject-cuda-release 13.1
     )
@@ -250,6 +252,15 @@ if [[ "$dry_run" -ne 0 ]]; then
 fi
 run_cmd "${full_cmd[@]}"
 
+if [[ "$dry_run" -eq 0 ]]; then
+    mkdir -p "$out_dir"
+    for build_log in cmake-configure.log cmake-build.log; do
+        if [[ ! -f "$out_dir/$build_log" && -f "$preflight_dir/$build_log" ]]; then
+            cp "$preflight_dir/$build_log" "$out_dir/$build_log"
+        fi
+    done
+fi
+
 handoff_stage="bundle_create"
 run_cmd "$python_bin" "$bundler" create \
     --dir "$out_dir" \
@@ -265,6 +276,7 @@ run_cmd "$python_bin" "$bundler" verify \
     --require-host-diagnostics \
     --require-host-arch 121a \
     --require-host-compute-cap 12.1 \
+    --require-build-arch 121a \
     --require-cuda-min 12.8 \
     --reject-cuda-release 13.1
 

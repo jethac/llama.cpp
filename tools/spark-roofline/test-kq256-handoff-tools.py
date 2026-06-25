@@ -152,6 +152,14 @@ def build_complete_artifact(root: Path) -> Path:
         + "\n",
         encoding="utf-8",
     )
+    (artifact_dir / "cmake-configure.log").write_text(
+        "+ cmake -S . -B build-spark-sm121-kq256 -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a\n",
+        encoding="utf-8",
+    )
+    (artifact_dir / "cmake-build.log").write_text(
+        "+ cmake --build build-spark-sm121-kq256 --config Release --target llama-spark-kq256\n",
+        encoding="utf-8",
+    )
 
     run(
         [
@@ -220,6 +228,8 @@ def main() -> int:
             "121a",
             "--require-host-compute-cap",
             "12.1",
+            "--require-build-arch",
+            "121a",
             "--require-cuda-min",
             "12.8",
             "--reject-cuda-release",
@@ -338,6 +348,35 @@ def main() -> int:
         wrong_ncu_threads = strict_verify + ["--require-ncu-threads", "128"]
         run(wrong_ncu_threads, expect=2)
 
+        wrong_build_arch = root / "synthetic-kq256-wrong-build-arch"
+        shutil.copytree(artifact_dir, wrong_build_arch)
+        (wrong_build_arch / "cmake-configure.log").write_text(
+            "+ cmake -S . -B build-spark-sm120-kq256 -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120a\n",
+            encoding="utf-8",
+        )
+        write_manifest(wrong_build_arch)
+        run(
+            [
+                sys.executable,
+                str(VERIFIER),
+                "--dir",
+                str(wrong_build_arch),
+                "--require-manifest",
+                "--require-go",
+                "--require-ncu",
+                "--require-ncu-threads",
+                "256",
+                "--require-host-diagnostics",
+                "--require-host-arch",
+                "121a",
+                "--require-host-compute-cap",
+                "12.1",
+                "--require-build-arch",
+                "121a",
+            ],
+            expect=2,
+        )
+
         old_cuda = root / "synthetic-kq256-old-cuda"
         shutil.copytree(artifact_dir, old_cuda)
         host_lines = (old_cuda / "host-diagnostics.log").read_text(encoding="utf-8").splitlines()
@@ -368,6 +407,8 @@ def main() -> int:
                 "121a",
                 "--require-host-compute-cap",
                 "12.1",
+                "--require-build-arch",
+                "121a",
                 "--require-cuda-min",
                 "12.8",
             ],
@@ -404,6 +445,8 @@ def main() -> int:
                 "121a",
                 "--require-host-compute-cap",
                 "12.1",
+                "--require-build-arch",
+                "121a",
                 "--require-cuda-min",
                 "12.8",
                 "--reject-cuda-release",
@@ -430,6 +473,8 @@ def main() -> int:
                 "121a",
                 "--require-host-compute-cap",
                 "12.1",
+                "--require-build-arch",
+                "121a",
                 "--require-cuda-min",
                 "12.8",
                 "--reject-cuda-release",

@@ -8,7 +8,7 @@ This runbook is for the real DGX Spark / GB10 `sm_121a` gate for
 The D=256 KQ gate is green only when all are true:
 
 - the run is on the Spark `sm_121a` device;
-- the build uses `CMAKE_CUDA_ARCHITECTURES=121a`;
+- `cmake-configure.log` proves the build used `CMAKE_CUDA_ARCHITECTURES=121a`;
 - `kq256-summary.json` reports `gate_decision=go`;
 - at least one Nsight Compute evidence JSON reports passing FP4-specific evidence;
 - the required Nsight thread shape, default `512`, has a complete passing artifact
@@ -52,9 +52,11 @@ bash tools/spark-roofline/run-spark-kq256-handoff.sh \
 
 The wrapper runs the local tooling self-test, Spark preflight, full gate, bundle
 creation, and strict bundle verification in order. The full gate reuses the
-preflight build by default; pass `--rebuild-full` only if you explicitly want a
-second build. The wrapper prints the bundle and `.sha256` paths to copy off the
-Spark host, and writes a small handoff summary at
+preflight build by default; in that mode the wrapper copies the preflight
+`cmake-configure.log` and `cmake-build.log` into the full artifact directory so
+the copied bundle can prove the build architecture. Pass `--rebuild-full` only
+if you explicitly want a second build. The wrapper prints the bundle and
+`.sha256` paths to copy off the Spark host, and writes a small handoff summary at
 `/tmp/llamacpp-spark-kq256-handoff-summary.txt` by default.
 
 The handoff summary is written on success, dry-run, and failure. It records
@@ -203,6 +205,8 @@ The artifact directory should contain at least:
 
 - `summary.txt`
 - `host-diagnostics.log`
+- `cmake-configure.log`
+- `cmake-build.log`
 - `kq256-threads-128.log`
 - `kq256-threads-256.log`
 - `kq256-threads-512.log`
@@ -285,6 +289,7 @@ python tools/spark-roofline/bundle-kq256-artifacts.py verify \
   --require-host-diagnostics \
   --require-host-arch 121a \
   --require-host-compute-cap 12.1 \
+  --require-build-arch 121a \
   --require-cuda-min 12.8 \
   --reject-cuda-release 13.1
 ```
@@ -295,6 +300,7 @@ The bundle verifier should report:
 passed=true
 gate_decision=go
 bundle_verified=true
+build_required_arch_matched=121a
 host_required_arch=121a
 host_required_compute_cap_matched=12.1
 cuda_required_min=12.8
