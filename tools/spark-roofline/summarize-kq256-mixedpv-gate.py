@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb|combined256_lutb) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -104,6 +104,12 @@ def parse_log(path: Path) -> dict[str, object]:
             row["q_quant_blocks"] = int(match.group(4))
             row["q_quant_repeats"] = int(match.group(5))
             row["q_quant_ms"] = float(match.group(6))
+            continue
+
+        match = re.match(r"^v_lut_bready:\s+entries=(\d+)\s+bytes=(\d+)$", stripped)
+        if match:
+            row["v_lut_entries"] = int(match.group(1))
+            row["v_lut_bytes"] = int(match.group(2))
             continue
 
         match = re.match(
@@ -292,6 +298,29 @@ def parse_log(path: Path) -> dict[str, object]:
             row["predecodedb_ms"] = float(match.group(12))
             continue
 
+        match = re.match(
+            r"^combined256_lutb:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
+            r"([0-9.]+)\s+GB/s-V-compact-read\s+([0-9.]+)\s+GB/s-V-lut-read\s+"
+            r"lut_bytes=(\d+)\s+blocks=(\d+)\s+warps=(\d+)\s+iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["lutb_total_tops"] = float(match.group(1))
+            row["lutb_useful_mtp_total_tops"] = float(match.group(2))
+            row["lutb_kq_issue_tops"] = float(match.group(3))
+            row["lutb_mixedpv_issue_tops"] = float(match.group(4))
+            row["lutb_k_compact_read_gbps"] = float(match.group(5))
+            row["lutb_v_compact_read_gbps"] = float(match.group(6))
+            row["lutb_v_lut_read_gbps"] = float(match.group(7))
+            row["lutb_lut_bytes"] = int(match.group(8))
+            row["lutb_blocks"] = int(match.group(9))
+            row["lutb_warps"] = int(match.group(10))
+            row["lutb_iters"] = int(match.group(11))
+            row["lutb_ms"] = float(match.group(12))
+            continue
+
     return row
 
 
@@ -394,6 +423,9 @@ def main() -> int:
         "combined256_localacc_occupancy_pct",
         "combined256_bypassvdequant_occupancy_pct",
         "combined256_predecodedb_occupancy_pct",
+        "combined256_lutb_occupancy_pct",
+        "v_lut_entries",
+        "v_lut_bytes",
         "v_predecode_compact_read_gbps",
         "v_predecode_bready_write_gbps",
         "v_predecode_total_gbps",
@@ -447,6 +479,14 @@ def main() -> int:
         "predecodedb_k_compact_read_gbps",
         "predecodedb_v_bready_read_gbps",
         "predecodedb_predecode_once_ms",
+        "lutb_total_tops",
+        "lutb_useful_mtp_total_tops",
+        "lutb_kq_issue_tops",
+        "lutb_mixedpv_issue_tops",
+        "lutb_k_compact_read_gbps",
+        "lutb_v_compact_read_gbps",
+        "lutb_v_lut_read_gbps",
+        "lutb_lut_bytes",
         "kq_ms",
         "pv_ms",
         "combined_ms",
@@ -454,6 +494,7 @@ def main() -> int:
         "localacc_ms",
         "bypassvdequant_ms",
         "predecodedb_ms",
+        "lutb_ms",
         "v_predecode_ms",
         "device_name",
         "log",
@@ -606,6 +647,23 @@ def main() -> int:
                     k_read=row.get("predecodedb_k_compact_read_gbps", ""),
                     v_read=row.get("predecodedb_v_bready_read_gbps", ""),
                     predecode_once=row.get("predecodedb_predecode_once_ms", ""),
+                )
+            )
+        if "lutb_total_tops" in row:
+            lines.append(
+                "threads={threads} lutb_total_tops={total} "
+                "useful_mtp_lutb_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_read_gbps={v_read} "
+                "v_lut_read_gbps={v_lut_read} lut_bytes={lut_bytes}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("lutb_total_tops", ""),
+                    useful_total=row.get("lutb_useful_mtp_total_tops", ""),
+                    kq_issue=row.get("lutb_kq_issue_tops", ""),
+                    mixedpv=row.get("lutb_mixedpv_issue_tops", ""),
+                    k_read=row.get("lutb_k_compact_read_gbps", ""),
+                    v_read=row.get("lutb_v_compact_read_gbps", ""),
+                    v_lut_read=row.get("lutb_v_lut_read_gbps", ""),
+                    lut_bytes=row.get("lutb_lut_bytes", ""),
                 )
             )
     args.text.write_text("\n".join(lines) + "\n", encoding="utf-8")
