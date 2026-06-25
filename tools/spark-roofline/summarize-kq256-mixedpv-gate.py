@@ -79,7 +79,7 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
-            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb|combined256_lutb|combined256_lutb_reuse4|combined256_smalllut) occupancy:\s+"
+            r"^(kq256_only|pv256_mixed|combined256_mixed|combined256_stripmine_g\d+|combined256_stagehalf|combined256_localacc|combined256_bypassvdequant|combined256_predecodedb|combined256_lutb|combined256_lutb_reuse4|combined256_lutb_mtp4|combined256_smalllut) occupancy:\s+"
             r"active_blocks_per_sm=(\d+)\s+active_warps_per_sm=(\d+)\s+"
             r"occupancy=([0-9.]+)%\s+shared=([0-9.]+)\s+KiB$",
             stripped,
@@ -346,6 +346,30 @@ def parse_log(path: Path) -> dict[str, object]:
             continue
 
         match = re.match(
+            r"^combined256_lutb_mtp4:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
+            r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
+            r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
+            r"([0-9.]+)\s+GB/s-V-compact-read\s+([0-9.]+)\s+GB/s-V-lut-read\s+"
+            r"lut_bytes=(\d+)\s+mtp_rows=(\d+)\s+blocks=(\d+)\s+warps=(\d+)\s+iters=(\d+)\s+time=([0-9.]+)\s+ms$",
+            stripped,
+        )
+        if match:
+            row["lutb_mtp4_total_tops"] = float(match.group(1))
+            row["lutb_mtp4_useful_mtp_total_tops"] = float(match.group(2))
+            row["lutb_mtp4_kq_issue_tops"] = float(match.group(3))
+            row["lutb_mtp4_mixedpv_issue_tops"] = float(match.group(4))
+            row["lutb_mtp4_k_compact_read_gbps"] = float(match.group(5))
+            row["lutb_mtp4_v_compact_read_gbps"] = float(match.group(6))
+            row["lutb_mtp4_v_lut_read_gbps"] = float(match.group(7))
+            row["lutb_mtp4_lut_bytes"] = int(match.group(8))
+            row["lutb_mtp4_rows"] = int(match.group(9))
+            row["lutb_mtp4_blocks"] = int(match.group(10))
+            row["lutb_mtp4_warps"] = int(match.group(11))
+            row["lutb_mtp4_iters"] = int(match.group(12))
+            row["lutb_mtp4_ms"] = float(match.group(13))
+            continue
+
+        match = re.match(
             r"^combined256_smalllut:\s+([0-9.]+)\s+modeled-total-TOPS\s+([0-9.]+)\s+"
             r"useful-mtp-modeled-total-TOPS\s+([0-9.]+)\s+KQ-issue-TOPS\s+"
             r"([0-9.]+)\s+mixedPV-issue-TOPS\s+([0-9.]+)\s+GB/s-K-compact-read\s+"
@@ -472,6 +496,7 @@ def main() -> int:
         "combined256_predecodedb_occupancy_pct",
         "combined256_lutb_occupancy_pct",
         "combined256_lutb_reuse4_occupancy_pct",
+        "combined256_lutb_mtp4_occupancy_pct",
         "combined256_smalllut_occupancy_pct",
         "v_lut_entries",
         "v_lut_bytes",
@@ -545,6 +570,15 @@ def main() -> int:
         "lutb_reuse4_v_lut_read_gbps",
         "lutb_reuse4_lut_bytes",
         "lutb_reuse4_reuse_factor",
+        "lutb_mtp4_total_tops",
+        "lutb_mtp4_useful_mtp_total_tops",
+        "lutb_mtp4_kq_issue_tops",
+        "lutb_mtp4_mixedpv_issue_tops",
+        "lutb_mtp4_k_compact_read_gbps",
+        "lutb_mtp4_v_compact_read_gbps",
+        "lutb_mtp4_v_lut_read_gbps",
+        "lutb_mtp4_lut_bytes",
+        "lutb_mtp4_rows",
         "smalllut_total_tops",
         "smalllut_useful_mtp_total_tops",
         "smalllut_kq_issue_tops",
@@ -562,6 +596,7 @@ def main() -> int:
         "predecodedb_ms",
         "lutb_ms",
         "lutb_reuse4_ms",
+        "lutb_mtp4_ms",
         "smalllut_ms",
         "v_predecode_ms",
         "device_name",
@@ -750,6 +785,24 @@ def main() -> int:
                     v_lut_read=row.get("lutb_reuse4_v_lut_read_gbps", ""),
                     lut_bytes=row.get("lutb_reuse4_lut_bytes", ""),
                     reuse_factor=row.get("lutb_reuse4_reuse_factor", ""),
+                )
+            )
+        if "lutb_mtp4_total_tops" in row:
+            lines.append(
+                "threads={threads} lutb_mtp4_total_tops={total} "
+                "useful_mtp_lutb_mtp4_total_tops={useful_total} kq_issue_tops={kq_issue} "
+                "mixedpv_issue_tops={mixedpv} k_read_gbps={k_read} v_read_gbps={v_read} "
+                "v_lut_read_gbps={v_lut_read} lut_bytes={lut_bytes} mtp_rows={mtp_rows}".format(
+                    threads=row.get("threads", ""),
+                    total=row.get("lutb_mtp4_total_tops", ""),
+                    useful_total=row.get("lutb_mtp4_useful_mtp_total_tops", ""),
+                    kq_issue=row.get("lutb_mtp4_kq_issue_tops", ""),
+                    mixedpv=row.get("lutb_mtp4_mixedpv_issue_tops", ""),
+                    k_read=row.get("lutb_mtp4_k_compact_read_gbps", ""),
+                    v_read=row.get("lutb_mtp4_v_compact_read_gbps", ""),
+                    v_lut_read=row.get("lutb_mtp4_v_lut_read_gbps", ""),
+                    lut_bytes=row.get("lutb_mtp4_lut_bytes", ""),
+                    mtp_rows=row.get("lutb_mtp4_rows", ""),
                 )
             )
         if "smalllut_total_tops" in row:
