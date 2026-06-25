@@ -144,6 +144,8 @@ write_handoff_summary() {
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
+        --require-cuda-min 12.8
+        --reject-cuda-release 13.1
     )
     local verify_copied_cmd=(
         "$python_bin" "$bundler" verify
@@ -154,6 +156,8 @@ write_handoff_summary() {
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
+        --require-cuda-min 12.8
+        --reject-cuda-release 13.1
     )
 
     mkdir -p "$(dirname "$summary_path")"
@@ -260,7 +264,9 @@ run_cmd "$python_bin" "$bundler" verify \
     --require-ncu-threads "$ncu_threads" \
     --require-host-diagnostics \
     --require-host-arch 121a \
-    --require-host-compute-cap 12.1
+    --require-host-compute-cap 12.1 \
+    --require-cuda-min 12.8 \
+    --reject-cuda-release 13.1
 
 handoff_stage="done"
 write_handoff_summary 0

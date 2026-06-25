@@ -16,6 +16,8 @@ The D=256 KQ gate is green only when all are true:
 - `host-diagnostics.log` is present and manifest-hashed;
 - `summary.txt` / `host-diagnostics.log` agree that the requested arch is `121a`;
 - the selected host device reports `compute_cap=12.1`;
+- `summary.txt` / `host-diagnostics.log` prove an acceptable CUDA toolkit:
+  `nvcc` release is at least 12.8 and is not 13.1;
 - the copied bundle SHA-256 sidecar verifies;
 - `artifact-manifest.tsv` verifies after copying or extracting the bundle.
 
@@ -282,7 +284,9 @@ python tools/spark-roofline/bundle-kq256-artifacts.py verify \
   --require-ncu-threads 512 \
   --require-host-diagnostics \
   --require-host-arch 121a \
-  --require-host-compute-cap 12.1
+  --require-host-compute-cap 12.1 \
+  --require-cuda-min 12.8 \
+  --reject-cuda-release 13.1
 ```
 
 The bundle verifier should report:
@@ -293,6 +297,8 @@ gate_decision=go
 bundle_verified=true
 host_required_arch=121a
 host_required_compute_cap_matched=12.1
+cuda_required_min=12.8
+cuda_rejected_releases=13.1
 ncu_required_threads=512
 ncu_complete_passed_threads=512
 ```

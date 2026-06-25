@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     verify.add_argument("--require-host-diagnostics", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-arch", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-compute-cap", help="Pass through to verify-kq256-artifacts.py")
+    verify.add_argument("--require-cuda-min", help="Pass through to verify-kq256-artifacts.py")
+    verify.add_argument("--reject-cuda-release", action="append", default=[], help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--keep-temp", action="store_true", help="Keep temporary extraction directory")
 
     return parser.parse_args()
@@ -83,6 +85,8 @@ def run_verifier(
     require_host_diagnostics: bool = False,
     require_host_arch: str | None = None,
     require_host_compute_cap: str | None = None,
+    require_cuda_min: str | None = None,
+    reject_cuda_releases: list[str] | None = None,
 ) -> None:
     cmd = [
         sys.executable,
@@ -103,6 +107,10 @@ def run_verifier(
         cmd.extend(["--require-host-arch", require_host_arch])
     if require_host_compute_cap:
         cmd.extend(["--require-host-compute-cap", require_host_compute_cap])
+    if require_cuda_min:
+        cmd.extend(["--require-cuda-min", require_cuda_min])
+    for release in reject_cuda_releases or []:
+        cmd.extend(["--reject-cuda-release", release])
 
     subprocess.run(cmd, check=True)
 
@@ -184,6 +192,8 @@ def verify_bundle(
     require_host_diagnostics: bool,
     require_host_arch: str | None,
     require_host_compute_cap: str | None,
+    require_cuda_min: str | None,
+    reject_cuda_releases: list[str],
     keep_temp: bool,
 ) -> int:
     if not bundle.is_file():
@@ -230,6 +240,8 @@ def verify_bundle(
                 require_host_diagnostics=require_host_diagnostics,
                 require_host_arch=require_host_arch,
                 require_host_compute_cap=require_host_compute_cap,
+                require_cuda_min=require_cuda_min,
+                reject_cuda_releases=reject_cuda_releases,
             )
         except (RuntimeError, tarfile.TarError, subprocess.CalledProcessError) as exc:
             print(f"bundle verification failed: {exc}", file=sys.stderr)
@@ -262,6 +274,8 @@ def main() -> int:
             args.require_host_diagnostics,
             args.require_host_arch,
             args.require_host_compute_cap,
+            args.require_cuda_min,
+            args.reject_cuda_release,
             args.keep_temp,
         )
     raise AssertionError(args.cmd)

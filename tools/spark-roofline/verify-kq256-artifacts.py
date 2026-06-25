@@ -21,6 +21,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-host-diagnostics", action="store_true", help="Require host-diagnostics.log and summary.txt pointer")
     parser.add_argument("--require-host-arch", help="Require summary.txt/host-diagnostics.log to show this requested CUDA arch, e.g. 121a")
     parser.add_argument("--require-host-compute-cap", help="Require host-diagnostics.log to show this CUDA compute capability, e.g. 12.1")
+    parser.add_argument("--require-cuda-min", help="Require nvcc release at least this major.minor version, e.g. 12.8")
+    parser.add_argument(
+        "--reject-cuda-release",
+        action="append",
+        default=[],
+        help="Reject this exact nvcc major.minor release; may be repeated, e.g. 13.1",
+    )
     parser.add_argument("--text", type=Path, help="Optional verification report output path")
     return parser.parse_args()
 
@@ -42,6 +49,21 @@ def normalize_list(value: str | None) -> list[str]:
     if not value:
         return []
     return [item for item in value.replace(",", " ").split() if item]
+
+
+def parse_version_pair(value: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", value)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def version_lt(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[0] or (left[0] == right[0] and left[1] < right[1])
+
+
+def version_text(version: tuple[int, int]) -> str:
+    return f"{version[0]}.{version[1]}"
 
 
 def verify_manifest(out_dir: Path, failures: list[str]) -> dict[str, object]:
@@ -211,11 +233,14 @@ def inspect_host_diagnostics(
     require_manifest: bool,
     required_arch: str | None,
     required_compute_cap: str | None,
+    required_cuda_min: str | None,
+    rejected_cuda_releases: list[str],
 ) -> dict[str, object]:
     path = out_dir / "host-diagnostics.log"
     present = path.is_file()
     summary_value = runner_summary.get("host_diagnostics", "")
     compute_caps: list[dict[str, str]] = []
+    cuda_releases: set[str] = set()
     runner_requested_arch = runner_summary.get("arch", "")
     diag_requested_arch = ""
 
@@ -235,6 +260,8 @@ def inspect_host_diagnostics(
         diag_requested_device = ""
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw_line.strip()
+            for match in re.finditer(r"\brelease\s+(\d+\.\d+)\b", line):
+                cuda_releases.add(match.group(1))
             if line.startswith("requested_arch="):
                 diag_requested_arch = line.split("=", 1)[1].strip()
                 continue
@@ -256,6 +283,38 @@ def inspect_host_diagnostics(
             )
         if not requested_device:
             requested_device = diag_requested_device
+
+    if runner_summary.get("nvcc_release"):
+        cuda_releases.add(runner_summary["nvcc_release"])
+
+    parsed_cuda_releases: dict[str, tuple[int, int]] = {}
+    for release in sorted(cuda_releases):
+        parsed = parse_version_pair(release)
+        if parsed is None:
+            failures.append(f"could not parse CUDA release from host diagnostics: {release!r}")
+            continue
+        parsed_cuda_releases[release] = parsed
+
+    if required_cuda_min:
+        required_min = parse_version_pair(required_cuda_min)
+        if required_min is None:
+            failures.append(f"invalid --require-cuda-min value: {required_cuda_min!r}")
+        elif not parsed_cuda_releases:
+            failures.append(f"no nvcc release found; required CUDA >= {required_cuda_min}")
+        elif all(version_lt(version, required_min) for version in parsed_cuda_releases.values()):
+            found = ", ".join(sorted(parsed_cuda_releases)) or "none"
+            failures.append(f"nvcc release does not satisfy CUDA >= {required_cuda_min}: found {found}")
+
+    normalized_rejects: set[str] = set()
+    for release in rejected_cuda_releases:
+        parsed = parse_version_pair(release)
+        if parsed is None:
+            failures.append(f"invalid --reject-cuda-release value: {release!r}")
+            continue
+        normalized_rejects.add(version_text(parsed))
+    rejected_found = normalized_rejects.intersection(parsed_cuda_releases)
+    if rejected_found:
+        failures.append(f"rejected CUDA release present: {', '.join(sorted(rejected_found))}")
 
     if required_arch:
         if runner_requested_arch and diag_requested_arch and runner_requested_arch != diag_requested_arch:
@@ -291,6 +350,9 @@ def inspect_host_diagnostics(
         "host_compute_caps": compute_caps,
         "host_required_compute_cap": required_compute_cap or "",
         "host_required_compute_cap_matched": matched_compute_cap,
+        "cuda_releases": sorted(parsed_cuda_releases),
+        "cuda_required_min": required_cuda_min or "",
+        "cuda_rejected_releases": sorted(normalized_rejects),
     }
 
 
@@ -327,6 +389,8 @@ def main() -> int:
         require_manifest=args.require_manifest,
         required_arch=args.require_host_arch,
         required_compute_cap=args.require_host_compute_cap,
+        required_cuda_min=args.require_cuda_min,
+        rejected_cuda_releases=args.reject_cuda_release,
     )
 
     gate_decision = summary.get("gate_decision", "")
@@ -378,6 +442,9 @@ def main() -> int:
         f"host_required_compute_cap={host_diag_info['host_required_compute_cap']}",
         f"host_required_compute_cap_matched={host_diag_info['host_required_compute_cap_matched']}",
         f"host_compute_caps={json.dumps(host_diag_info['host_compute_caps'], sort_keys=True)}",
+        f"cuda_releases={' '.join(host_diag_info['cuda_releases'])}",
+        f"cuda_required_min={host_diag_info['cuda_required_min']}",
+        f"cuda_rejected_releases={' '.join(host_diag_info['cuda_rejected_releases'])}",
         f"ncu_evidence_files={ncu_info['ncu_evidence_files']}",
         f"ncu_passed_files={ncu_info['ncu_passed_files']}",
         f"ncu_complete_sets={ncu_info['ncu_complete_sets']}",

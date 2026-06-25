@@ -132,6 +132,7 @@ def build_complete_artifact(root: Path) -> Path:
             [
                 "requested_arch=121a",
                 "requested_device=0",
+                "Cuda compilation tools, release 12.8, V12.8.99",
                 "## nvidia-smi query",
                 "0, NVIDIA GB10, 12.1, 580.00, 131072 MiB",
             ]
@@ -219,6 +220,10 @@ def main() -> int:
             "121a",
             "--require-host-compute-cap",
             "12.1",
+            "--require-cuda-min",
+            "12.8",
+            "--reject-cuda-release",
+            "13.1",
         ]
         run(strict_verify)
 
@@ -333,6 +338,80 @@ def main() -> int:
         wrong_ncu_threads = strict_verify + ["--require-ncu-threads", "128"]
         run(wrong_ncu_threads, expect=2)
 
+        old_cuda = root / "synthetic-kq256-old-cuda"
+        shutil.copytree(artifact_dir, old_cuda)
+        host_lines = (old_cuda / "host-diagnostics.log").read_text(encoding="utf-8").splitlines()
+        (old_cuda / "host-diagnostics.log").write_text(
+            "\n".join(
+                "Cuda compilation tools, release 12.7, V12.7.99"
+                if line.startswith("Cuda compilation tools, release ")
+                else line
+                for line in host_lines
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_manifest(old_cuda)
+        run(
+            [
+                sys.executable,
+                str(VERIFIER),
+                "--dir",
+                str(old_cuda),
+                "--require-manifest",
+                "--require-go",
+                "--require-ncu",
+                "--require-ncu-threads",
+                "256",
+                "--require-host-diagnostics",
+                "--require-host-arch",
+                "121a",
+                "--require-host-compute-cap",
+                "12.1",
+                "--require-cuda-min",
+                "12.8",
+            ],
+            expect=2,
+        )
+
+        rejected_cuda = root / "synthetic-kq256-rejected-cuda"
+        shutil.copytree(artifact_dir, rejected_cuda)
+        host_lines = (rejected_cuda / "host-diagnostics.log").read_text(encoding="utf-8").splitlines()
+        (rejected_cuda / "host-diagnostics.log").write_text(
+            "\n".join(
+                "Cuda compilation tools, release 13.1, V13.1.99"
+                if line.startswith("Cuda compilation tools, release ")
+                else line
+                for line in host_lines
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_manifest(rejected_cuda)
+        run(
+            [
+                sys.executable,
+                str(VERIFIER),
+                "--dir",
+                str(rejected_cuda),
+                "--require-manifest",
+                "--require-go",
+                "--require-ncu",
+                "--require-ncu-threads",
+                "256",
+                "--require-host-diagnostics",
+                "--require-host-arch",
+                "121a",
+                "--require-host-compute-cap",
+                "12.1",
+                "--require-cuda-min",
+                "12.8",
+                "--reject-cuda-release",
+                "13.1",
+            ],
+            expect=2,
+        )
+
         bundle = root / "synthetic-kq256-complete.tar.gz"
         run([sys.executable, str(BUNDLER), "create", "--dir", str(artifact_dir), "--out", str(bundle), "--verify-first"])
         run(
@@ -351,6 +430,10 @@ def main() -> int:
                 "121a",
                 "--require-host-compute-cap",
                 "12.1",
+                "--require-cuda-min",
+                "12.8",
+                "--reject-cuda-release",
+                "13.1",
             ]
         )
 
