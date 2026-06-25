@@ -1094,6 +1094,12 @@ struct csv_printer : public printer {
             "op_params",
             "supported",
             "error_message",
+            "time_us",
+            "flops",
+            "bandwidth_gb_s",
+            "memory_kb",
+            "n_runs",
+            "device_description",
             "test_mode",
             "backend_reg_name",
             "backend_name",
@@ -6522,6 +6528,18 @@ struct test_flash_attn_ext : public test_case {
         return 5e-4;
     }
 
+    double max_nmse_err(ggml_backend_t backend) override {
+        // Native Blackwell FP4 FA dynamically quantizes Q activations to FP4
+        // before KQ, so its error floor is higher than the dequantized-K/V
+        // scalar reference but much lower than the generic FP4 matmul limit.
+        if ((type_K == GGML_TYPE_MXFP4 || type_K == GGML_TYPE_NVFP4 ||
+             type_V == GGML_TYPE_MXFP4 || type_V == GGML_TYPE_NVFP4) &&
+                backend_has_feature(backend, "BLACKWELL_NATIVE_FP4")) {
+            return 2e-3;
+        }
+        return max_nmse_err();
+    }
+
     uint64_t op_flops(ggml_tensor * t) override {
         GGML_UNUSED(t);
         // Just counting matmul costs:
@@ -9130,8 +9148,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(128, 64, 4, {1, 1}, 128, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q1_0, GGML_TYPE_Q4_0));
     test_cases.emplace_back(new test_flash_attn_ext(64, 128, 4, {1, 1}, 128, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q1_0));
     test_cases.emplace_back(new test_flash_attn_ext(128, 64, 4, {1, 1}, 64, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q1_0, GGML_TYPE_F16));
-    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {1, 1}, 512, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
-    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {1, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {1, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {1, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));
@@ -9454,6 +9472,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                 test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {nr, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
             }
         }
+    }
+
+    // Gemma-family Blackwell FP4 MTP4 shapes. NVFP4 support is intentionally
+    // disabled in normal builds until the native Spark path is production-ready,
+    // but these rows give debug/Spark builds a stable backend-op perf target.
+    for (int hs : {256, 512}) {
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16,   GGML_TYPE_F16));
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
     }
 
     for (int col : {8192, 16384, 32768, 65536, 131072, 262144, 524288}) {

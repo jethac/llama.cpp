@@ -105,7 +105,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         n_head = 2;
         n_ff   = 768;
     } else if (arch == LLM_ARCH_GEMMA4) {
-        n_embd = 1024; // use 512-wide heads to cover Gemma 4 NVFP4 V-split attention
+        n_embd = 1024; // use 512-wide heads to cover Gemma 4 native NVFP4 attention shapes
         n_head = 2;
         n_ff   = 1536;
         n_layer = 2;

@@ -121,9 +121,27 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-f16-f16.cu
             template-instances/fattn-vec-instance-q4_0-q4_0.cu
             template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            template-instances/fattn-vec-instance-bf16-bf16.cu
-            template-instances/fattn-vec-instance-nvfp4-nvfp4.cu
-            template-instances/fattn-vec-instance-nvfp4-nvfp4-split.cu)
+            template-instances/fattn-vec-instance-bf16-bf16.cu)
+    endif()
+
+    set(GGML_CUDA_FATTN_NVFP4_DEFS)
+    if (GGML_CUDA_NVFP4_FA_SCALAR_DEBUG)
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_SCALAR_DEBUG)
+    endif()
+    if (GGML_CUDA_NVFP4_FA_TC_DEBUG)
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_TC_DEBUG)
+    endif()
+    if (GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP)
+    endif()
+    if (GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_PV)
+    endif()
+    if (GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ)
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_TC_DEBUG_SCALAR_KQ)
+    endif()
+    if (GGML_CUDA_FATTN_NVFP4_DEFS)
+        set_source_files_properties(fattn-nvfp4.cu PROPERTIES COMPILE_DEFINITIONS "${GGML_CUDA_FATTN_NVFP4_DEFS}")
     endif()
 
     ggml_add_backend_library(ggml-cuda
