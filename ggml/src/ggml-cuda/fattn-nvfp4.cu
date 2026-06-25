@@ -1303,8 +1303,8 @@ static void ggml_cuda_flash_attn_ext_nvfp4_mtp4_fill_lut(ggml_backend_cuda_conte
 }
 
 static bool ggml_cuda_flash_attn_ext_nvfp4_row_contiguous(const ggml_tensor * t) {
-    return t->nb[0] == (int64_t) ggml_type_size(t->type) &&
-           t->nb[1] == (int64_t) ggml_row_size(t->type, t->ne[0]);
+    return t->nb[0] == ggml_type_size(t->type) &&
+           t->nb[1] == ggml_row_size(t->type, t->ne[0]);
 }
 
 static bool ggml_cuda_flash_attn_ext_nvfp4_mask_supported(const ggml_tensor * mask, const ggml_tensor * Q, const ggml_tensor * K) {
@@ -1320,8 +1320,8 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mask_supported(const ggml_tensor * ma
         return false;
     }
 
-    return mask->nb[0] == (int64_t) ggml_type_size(mask->type) &&
-           mask->nb[1] == (int64_t) ggml_row_size(mask->type, mask->ne[0]);
+    return mask->nb[0] == ggml_type_size(mask->type) &&
+           mask->nb[1] == ggml_row_size(mask->type, mask->ne[0]);
 }
 
 static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, const ggml_tensor * dst) {
