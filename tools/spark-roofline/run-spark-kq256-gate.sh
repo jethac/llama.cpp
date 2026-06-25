@@ -376,14 +376,18 @@ for candidate in \
     "$repo_root/$build_dir/bin/llama-spark-kq256" \
     "$repo_root/$build_dir/bin/llama-spark-kq256.exe" \
     "$repo_root/$build_dir/bin/Release/llama-spark-kq256" \
-    "$repo_root/$build_dir/bin/Release/llama-spark-kq256.exe"; do
+    "$repo_root/$build_dir/bin/Release/llama-spark-kq256.exe" \
+    "$repo_root/$build_dir/bin/RelWithDebInfo/llama-spark-kq256" \
+    "$repo_root/$build_dir/bin/RelWithDebInfo/llama-spark-kq256.exe" \
+    "$repo_root/$build_dir/bin/Debug/llama-spark-kq256" \
+    "$repo_root/$build_dir/bin/Debug/llama-spark-kq256.exe"; do
     if [[ -x "$candidate" ]]; then
         exe="$candidate"
         break
     fi
 done
 if [[ "$dry_run" -eq 0 && ! -x "$exe" ]]; then
-    echo "missing executable under $repo_root/$build_dir/bin" >&2
+    echo "missing executable under $repo_root/$build_dir/bin or known CMake config subdirectories" >&2
     exit 1
 fi
 if [[ -z "$exe" ]]; then
