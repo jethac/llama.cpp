@@ -6,6 +6,15 @@
 
 #include <cstring>
 
+#if defined(GGML_CUDA_NVFP4_FA)
+#define GGML_CUDA_NVFP4_FA_TC_DEBUG
+#define GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
+#define GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV
+#define GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED
+#define GGML_CUDA_NVFP4_FA_TC_DEBUG_SPLIT_KV_ROWS GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS
+#define GGML_CUDA_NVFP4_FA_TC_DEBUG_DECOUPLED_WINDOW_SPLITS GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS
+#endif // defined(GGML_CUDA_NVFP4_FA)
+
 static constexpr size_t FATTN_NVFP4_LUT_SCALE_COUNT = 256;
 static constexpr size_t FATTN_NVFP4_LUT_FP4_COUNT   = 256;
 static constexpr size_t FATTN_NVFP4_LUT_SIZE        = FATTN_NVFP4_LUT_SCALE_COUNT * FATTN_NVFP4_LUT_FP4_COUNT;
@@ -2149,6 +2158,12 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, cons
         return false;
     }
 
+#if defined(GGML_CUDA_NVFP4_FA)
+    if (Q->ne[2] == K->ne[2]) {
+        return false;
+    }
+#endif // defined(GGML_CUDA_NVFP4_FA)
+
     if (!ggml_cuda_flash_attn_ext_nvfp4_mask_supported(mask, Q, K)) {
         return false;
     }
@@ -2182,7 +2197,9 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, cons
 bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_supported(int device, const ggml_tensor * dst) {
     const bool shape_supported = ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(device, dst);
 
-#if defined(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
+#if defined(GGML_CUDA_NVFP4_FA)
+    return shape_supported;
+#elif defined(GGML_CUDA_NVFP4_FA_SCALAR_DEBUG) || defined(GGML_CUDA_NVFP4_FA_TC_DEBUG)
     // Non-shipping debug modes: scalar mode exercises the D=256/D=512 correctness
     // oracle; tensor-core mode exposes the unfinished native path for focused
     // backend-op diagnostics. Neither mode is enabled for release builds.
