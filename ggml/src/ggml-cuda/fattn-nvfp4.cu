@@ -263,6 +263,7 @@ static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_lookup_row_value_l
     return ggml_cuda_fattn_nvfp4_half2_from_bits(ggml_cuda_fattn_nvfp4_lookup_row_value_half_bits(lut, row, col));
 }
 
+#ifdef GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
 static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_lookup_row_pair_half2(
         const uint32_t *    lut,
         const block_nvfp4 * row0,
@@ -272,6 +273,7 @@ static __device__ __forceinline__ half2 ggml_cuda_fattn_nvfp4_lookup_row_pair_ha
     const uint32_t high = ggml_cuda_fattn_nvfp4_lookup_row_value_half_bits(lut, row1, col);
     return ggml_cuda_fattn_nvfp4_half2_from_bits(low | (high << 16));
 }
+#endif // GGML_CUDA_NVFP4_FA_TC_DEBUG_MULTIWARP
 #endif // GGML_CUDA_NVFP4_FA_TC_DEBUG
 
 static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_dot_q_k(
@@ -1080,7 +1082,9 @@ __global__ void fattn_nvfp4_mtp4_multiwarp_kernel(const fattn_nvfp4_mtp4_params 
                 }
             }
         }
-        __syncthreads();
+        if ((kv_row & 1) != 0) {
+            __syncthreads();
+        }
     }
 
     if ((params.ne_kv_rows & 1) != 0 && warp_id >= FATTN_NVFP4_TC_KQ_WARPS && warp_id < FATTN_NVFP4_TC_WARPS) {
