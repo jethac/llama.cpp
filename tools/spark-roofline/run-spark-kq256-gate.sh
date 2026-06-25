@@ -332,11 +332,14 @@ summary="$out_dir/summary.txt"
     echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     git -C "$repo_root" rev-parse HEAD 2>/dev/null | sed 's/^/git_head=/'
     status_tmp="$out_dir/git-status.tmp"
+    status_relevant_tmp="$out_dir/git-status-relevant.tmp"
     git -C "$repo_root" status --short --untracked-files=no > "$status_tmp" 2>/dev/null || true
-    echo "git_status_count=$(wc -l < "$status_tmp")"
-    grep -E '^( M|M |A | D|D |R |C |UU|AA|DD) (tools/spark-roofline|tools/CMakeLists.txt)' "$status_tmp" \
-        | sed -n '1,200s/^/git_status_relevant=/p' || true
-    rm -f "$status_tmp"
+    grep -E '^( M|M |A | D|D |R |C |UU|AA|DD) (tools/spark-roofline|tools/CMakeLists.txt|\.gitattributes)' "$status_tmp" \
+        > "$status_relevant_tmp" || true
+    echo "git_status_total_count=$(wc -l < "$status_tmp")"
+    echo "git_status_relevant_count=$(wc -l < "$status_relevant_tmp")"
+    sed -n '1,200s/^/git_status_relevant=/p' "$status_relevant_tmp" || true
+    rm -f "$status_tmp" "$status_relevant_tmp"
     if command -v nvidia-smi >/dev/null 2>&1; then
         nvidia-smi -L | sed 's/^/nvidia_smi=/'
     fi
