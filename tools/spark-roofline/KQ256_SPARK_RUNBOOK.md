@@ -10,6 +10,8 @@ The D=256 KQ gate is green only when all are true:
 - the run is on the Spark `sm_121a` device;
 - `cmake-configure.log` proves the build used `CMAKE_CUDA_ARCHITECTURES=121a`;
 - `summary.txt` records the expected `git_head`;
+- `summary.txt` records `git_status_relevant_count=0` for `.gitattributes`,
+  `tools/CMakeLists.txt`, and `tools/spark-roofline`;
 - `kq256-summary.json` reports `gate_decision=go`;
 - at least one Nsight Compute evidence JSON reports passing FP4-specific evidence;
 - the required Nsight thread shape, default `512`, has a complete passing artifact
@@ -290,6 +292,7 @@ python tools/spark-roofline/bundle-kq256-artifacts.py verify \
   --require-ncu \
   --require-ncu-threads 512 \
   --require-git-head <expected-git-head> \
+  --require-clean-relevant-git \
   --require-host-diagnostics \
   --require-host-arch 121a \
   --require-host-compute-cap 12.1 \
@@ -305,6 +308,8 @@ passed=true
 gate_decision=go
 bundle_verified=true
 git_required_head=<expected-git-head>
+git_status_relevant_count=0
+git_clean_relevant_required=true
 build_required_arch_matched=121a
 host_required_arch=121a
 host_required_compute_cap_matched=12.1

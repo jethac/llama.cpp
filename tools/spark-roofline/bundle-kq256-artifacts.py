@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     verify.add_argument("--require-ncu", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-ncu-threads", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-git-head", help="Pass through to verify-kq256-artifacts.py")
+    verify.add_argument("--require-clean-relevant-git", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-diagnostics", action="store_true", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-arch", help="Pass through to verify-kq256-artifacts.py")
     verify.add_argument("--require-host-compute-cap", help="Pass through to verify-kq256-artifacts.py")
@@ -85,6 +86,7 @@ def run_verifier(
     require_ncu: bool = False,
     require_ncu_threads: str | None = None,
     require_git_head: str | None = None,
+    require_clean_relevant_git: bool = False,
     require_host_diagnostics: bool = False,
     require_host_arch: str | None = None,
     require_host_compute_cap: str | None = None,
@@ -107,6 +109,8 @@ def run_verifier(
         cmd.extend(["--require-ncu-threads", require_ncu_threads])
     if require_git_head:
         cmd.extend(["--require-git-head", require_git_head])
+    if require_clean_relevant_git:
+        cmd.append("--require-clean-relevant-git")
     if require_host_diagnostics:
         cmd.append("--require-host-diagnostics")
     if require_host_arch:
@@ -198,6 +202,7 @@ def verify_bundle(
     require_ncu: bool,
     require_ncu_threads: str | None,
     require_git_head: str | None,
+    require_clean_relevant_git: bool,
     require_host_diagnostics: bool,
     require_host_arch: str | None,
     require_host_compute_cap: str | None,
@@ -248,6 +253,7 @@ def verify_bundle(
                 require_ncu=require_ncu,
                 require_ncu_threads=require_ncu_threads,
                 require_git_head=require_git_head,
+                require_clean_relevant_git=require_clean_relevant_git,
                 require_host_diagnostics=require_host_diagnostics,
                 require_host_arch=require_host_arch,
                 require_host_compute_cap=require_host_compute_cap,
@@ -284,6 +290,7 @@ def main() -> int:
             args.require_ncu,
             args.require_ncu_threads,
             args.require_git_head,
+            args.require_clean_relevant_git,
             args.require_host_diagnostics,
             args.require_host_arch,
             args.require_host_compute_cap,

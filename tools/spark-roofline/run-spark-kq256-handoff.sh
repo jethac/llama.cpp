@@ -143,6 +143,7 @@ write_handoff_summary() {
         --require-ncu
         --require-ncu-threads "$ncu_threads"
         --require-git-head "$git_head"
+        --require-clean-relevant-git
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
@@ -157,6 +158,7 @@ write_handoff_summary() {
         --require-ncu
         --require-ncu-threads "$ncu_threads"
         --require-git-head "$git_head"
+        --require-clean-relevant-git
         --require-host-diagnostics
         --require-host-arch 121a
         --require-host-compute-cap 12.1
@@ -279,6 +281,7 @@ run_cmd "$python_bin" "$bundler" verify \
     --require-ncu \
     --require-ncu-threads "$ncu_threads" \
     --require-git-head "$git_head" \
+    --require-clean-relevant-git \
     --require-host-diagnostics \
     --require-host-arch 121a \
     --require-host-compute-cap 12.1 \

@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-ncu-threads", help="Require complete passing NCU evidence for these comma/space-separated thread counts")
     parser.add_argument("--require-manifest", action="store_true", help="Fail if artifact-manifest.tsv is missing")
     parser.add_argument("--require-git-head", help="Require summary.txt git_head to match this commit SHA")
+    parser.add_argument("--require-clean-relevant-git", action="store_true", help="Require summary.txt git_status_relevant_count=0")
     parser.add_argument("--require-host-diagnostics", action="store_true", help="Require host-diagnostics.log and summary.txt pointer")
     parser.add_argument("--require-host-arch", help="Require summary.txt/host-diagnostics.log to show this requested CUDA arch, e.g. 121a")
     parser.add_argument("--require-host-compute-cap", help="Require host-diagnostics.log to show this CUDA compute capability, e.g. 12.1")
@@ -463,6 +464,12 @@ def main() -> int:
         elif git_head != required_git_head:
             failures.append(f"git_head mismatch: expected {required_git_head}, got {git_head}")
 
+    git_status_relevant_count = runner_summary.get("git_status_relevant_count", "")
+    if args.require_clean_relevant_git:
+        if git_status_relevant_count != "0":
+            found = git_status_relevant_count or "missing"
+            failures.append(f"git_status_relevant_count is not 0: {found}")
+
     if args.require_ncu and ncu_info["ncu_passed_files"] < 1:
         failures.append("no passing NCU FP4 evidence JSON found")
     if args.require_ncu and ncu_info["ncu_complete_passed_sets"] < 1:
@@ -498,6 +505,8 @@ def main() -> int:
         f"runner_exit_code={runner_exit_code}",
         f"git_head={git_head}",
         f"git_required_head={required_git_head}",
+        f"git_status_relevant_count={git_status_relevant_count}",
+        f"git_clean_relevant_required={str(args.require_clean_relevant_git).lower()}",
         f"manifest_present={str(manifest_info['manifest_present']).lower()}",
         f"manifest_rows={manifest_info['manifest_rows']}",
         f"build_configure_log_present={str(build_info['build_configure_log_present']).lower()}",

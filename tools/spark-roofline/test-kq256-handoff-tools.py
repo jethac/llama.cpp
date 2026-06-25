@@ -147,6 +147,7 @@ def build_complete_artifact(root: Path) -> Path:
                 "arch=121a",
                 "device=0",
                 f"git_head={SYNTHETIC_GIT_HEAD}",
+                "git_status_relevant_count=0",
                 f"host_diagnostics={artifact_dir / 'host-diagnostics.log'}",
                 "exit_code=0",
             ]
@@ -227,6 +228,7 @@ def main() -> int:
             "256",
             "--require-git-head",
             SYNTHETIC_GIT_HEAD,
+            "--require-clean-relevant-git",
             "--require-host-diagnostics",
             "--require-host-arch",
             "121a",
@@ -257,6 +259,7 @@ def main() -> int:
                 "256",
                 "--require-git-head",
                 SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -287,6 +290,7 @@ def main() -> int:
                 "256",
                 "--require-git-head",
                 SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -317,6 +321,7 @@ def main() -> int:
                 "256",
                 "--require-git-head",
                 SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -361,6 +366,36 @@ def main() -> int:
         wrong_git_head = strict_verify + ["--require-git-head", "0" * 40]
         run(wrong_git_head, expect=2)
 
+        dirty_relevant_git = root / "synthetic-kq256-dirty-relevant-git"
+        shutil.copytree(artifact_dir, dirty_relevant_git)
+        summary_lines = (dirty_relevant_git / "summary.txt").read_text(encoding="utf-8").splitlines()
+        (dirty_relevant_git / "summary.txt").write_text(
+            "\n".join(
+                "git_status_relevant_count=1" if line.startswith("git_status_relevant_count=") else line
+                for line in summary_lines
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        write_manifest(dirty_relevant_git)
+        run(
+            [
+                sys.executable,
+                str(VERIFIER),
+                "--dir",
+                str(dirty_relevant_git),
+                "--require-manifest",
+                "--require-go",
+                "--require-ncu",
+                "--require-ncu-threads",
+                "256",
+                "--require-git-head",
+                SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
+            ],
+            expect=2,
+        )
+
         wrong_build_arch = root / "synthetic-kq256-wrong-build-arch"
         shutil.copytree(artifact_dir, wrong_build_arch)
         (wrong_build_arch / "cmake-configure.log").write_text(
@@ -381,6 +416,7 @@ def main() -> int:
                 "256",
                 "--require-git-head",
                 SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -419,6 +455,7 @@ def main() -> int:
                 "256",
                 "--require-git-head",
                 SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
@@ -487,6 +524,7 @@ def main() -> int:
                 "256",
                 "--require-git-head",
                 SYNTHETIC_GIT_HEAD,
+                "--require-clean-relevant-git",
                 "--require-host-diagnostics",
                 "--require-host-arch",
                 "121a",
