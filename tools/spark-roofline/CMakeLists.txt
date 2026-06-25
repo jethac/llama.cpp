@@ -10,6 +10,7 @@ set(KQSTAGE_TARGET llama-spark-kqstage)
 set(KQ256_TARGET llama-spark-kq256)
 
 find_package(CUDAToolkit REQUIRED)
+enable_language(CUDA)
 
 add_executable(${TARGET} spark-roofline.cu host-runtime.cpp)
 target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
