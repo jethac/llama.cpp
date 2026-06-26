@@ -9519,9 +9519,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
-    // Gemma-family Blackwell FP4 MTP4 shapes. NVFP4 support is intentionally
-    // disabled in normal builds until the native Spark path is production-ready,
-    // but these rows give debug/Spark builds a stable backend-op perf target.
+    // Gemma-family Blackwell FP4 shapes. Default CUDA builds decline these rows;
+    // Blackwell production builds with GGML_CUDA_NVFP4_FA enabled use them as a
+    // stable backend-op correctness/perf target.
     for (int hs : {256, 512}) {
         test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16,   GGML_TYPE_F16));
         test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
