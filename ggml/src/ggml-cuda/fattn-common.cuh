@@ -347,19 +347,16 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_nvfp4(
         const int j  = ir % QK_NVFP4_SUB;
 
         const int u = Q_q8[k_KQ_0/nthreads];
-        const int8_t * q8 = (const int8_t *) &u;
 
         const float2 * Q_ds = (const float2 *) Q_ds_v;
         const float Q_d = Q_ds[k_KQ_0/nthreads].x;
         const float K_d = ggml_cuda_ue4m3_to_fp32(K_nvfp4[ib].d[s]);
 
-#pragma unroll
-        for (int l = 0; l < int(sizeof(int)); ++l) {
-            const int i = j + l;
-            const uint8_t q = K_nvfp4[ib].qs[s*(QK_NVFP4_SUB/2) + i%(QK_NVFP4_SUB/2)];
-            const uint8_t qc = i < QK_NVFP4_SUB/2 ? q & 0x0F : q >> 4;
-            sum += Q_d * K_d * kvalues_mxfp4[qc] * q8[l];
-        }
+        const int qs = get_int_b4(K_nvfp4[ib].qs, s*2 + (j % (QK_NVFP4_SUB/2))/int(sizeof(int)));
+        const int2 vals = get_int_from_table_16(qs, kvalues_mxfp4);
+        const int kq = j < QK_NVFP4_SUB/2 ? vals.x : vals.y;
+
+        sum += Q_d * K_d * ggml_cuda_dp4a(kq, u, 0);
     }
 
     return sum;
