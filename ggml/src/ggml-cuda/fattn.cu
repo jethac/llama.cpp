@@ -360,9 +360,15 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(const int devi
         (Q->ne[0] == 512 && K->ne[0] == 512 && V->ne[0] == 512 && KQV->ne[0] == 512) ||
         (Q->ne[0] == 512 && K->ne[0] == 512 && V->ne[0] == 256 && KQV->ne[0] == 256);
 
-    if (!supported_dims || Q->ne[1] != 1) {
+    if (!supported_dims) {
         return false;
     }
+
+#if !defined(GGML_CUDA_NVFP4_FA_VEC_ALL_ROWS)
+    if (Q->ne[1] != 1) {
+        return false;
+    }
+#endif
 
     if (K->ne[1] != V->ne[1] || K->ne[2] != V->ne[2] || K->ne[3] != V->ne[3]) {
         return false;
