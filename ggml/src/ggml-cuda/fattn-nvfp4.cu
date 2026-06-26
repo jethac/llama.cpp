@@ -2149,7 +2149,7 @@ __global__ void fattn_nvfp4_p1_kq8_tc_pv_nosplit_kernel(const fattn_nvfp4_mtp4_p
                 if (lane == 0) {
                     const int64_t kv_row = kv_base + kv_i;
                     if (kv_row < params.ne_kv_rows) {
-                        const float raw_score = __shfl_sync(0xffffffff, local_score, 0);
+                        const float raw_score = local_score;
                         const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, 0, kv_row, seq);
                         score_tile[kv_i] = raw_score * params.scale + mask;
                     } else {
