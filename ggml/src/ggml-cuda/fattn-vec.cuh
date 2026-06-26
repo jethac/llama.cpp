@@ -14,8 +14,9 @@ static_assert(GGML_CUDA_FATTN_VEC_NTHREADS == 64 ||
               "GGML_CUDA_FATTN_VEC_NTHREADS must be one of: 64, 128, 256, 512");
 static_assert(GGML_CUDA_FATTN_VEC_NTHREADS % WARP_SIZE == 0, "bad vector FlashAttention thread count");
 static_assert(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 4 ||
-              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 8,
-              "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8");
+              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 8 ||
+              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 16,
+              "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8, 16");
 
 static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
     return GGML_CUDA_FATTN_VEC_NTHREADS;
