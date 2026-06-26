@@ -324,9 +324,64 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
+    FATTN_VEC_CASE(256, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     GGML_ABORT("fatal error");
+}
+
+static bool ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(const int device, const ggml_tensor * dst) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const ggml_tensor * KQV   = dst;
+    const ggml_tensor * Q     = dst->src[0];
+    const ggml_tensor * K     = dst->src[1];
+    const ggml_tensor * V     = dst->src[2];
+    const ggml_tensor * mask  = dst->src[3];
+    const ggml_tensor * sinks = dst->src[4];
+
+    if (Q == nullptr || K == nullptr || V == nullptr || mask == nullptr) {
+        return false;
+    }
+
+    const int cc = ggml_cuda_info().devices[device].cc;
+    if (!blackwell_mma_available(cc)) {
+        return false;
+    }
+
+    if (Q->type != GGML_TYPE_F32 || KQV->type != GGML_TYPE_F32 || K->type != GGML_TYPE_NVFP4 || V->type != GGML_TYPE_NVFP4) {
+        return false;
+    }
+
+    if (Q->ne[0] != 256 || K->ne[0] != 256 || V->ne[0] != 256 || KQV->ne[0] != 256 || Q->ne[1] != 1) {
+        return false;
+    }
+
+    if (K->ne[1] != V->ne[1] || K->ne[2] != V->ne[2] || K->ne[3] != V->ne[3]) {
+        return false;
+    }
+
+    if (Q->ne[2] % K->ne[2] != 0 || Q->ne[2] == K->ne[2] || Q->ne[3] != K->ne[3]) {
+        return false;
+    }
+
+    if (mask->type != GGML_TYPE_F16 || mask->ne[0] != K->ne[1] || mask->ne[1] != Q->ne[1] || mask->ne[2] != 1) {
+        return false;
+    }
+
+    if (mask->ne[3] != 1 && mask->ne[3] != Q->ne[3]) {
+        return false;
+    }
+
+    if (sinks != nullptr || K->ne[1] % FATTN_KQ_STRIDE != 0) {
+        return false;
+    }
+
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&max_bias,      (const float *) KQV->op_params + 1, sizeof(float));
+    memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+    return max_bias == 0.0f && logit_softcap == 0.0f;
 }
 
 // Best FlashAttention kernel for a specific GPU:
@@ -373,6 +428,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     const int cc = ggml_cuda_info().devices[device].cc;
+
+    if (ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(device, dst)) {
+        return BEST_FATTN_KERNEL_VEC;
+    }
 
     if (ggml_cuda_flash_attn_ext_nvfp4_mtp4_supported(device, dst)) {
         return BEST_FATTN_KERNEL_NVFP4_MTP4;
