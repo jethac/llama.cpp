@@ -23,8 +23,9 @@ static_assert(GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS == 64 ||
               "GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS must be one of: 64, 128, 256, 512");
 static_assert(GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS % WARP_SIZE == 0, "bad NVFP4 vector FlashAttention thread count");
 static_assert(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 4 ||
-              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 8,
-              "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8");
+              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 8 ||
+              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 16,
+              "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8, 16");
 
 template <ggml_type type_K, ggml_type type_V>
 static constexpr __host__ __device__ int ggml_cuda_fattn_vec_get_nthreads() {
@@ -120,14 +121,17 @@ static __global__ void flash_attn_ext_vec(
 
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device<type_K, type_V>();
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
-    constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
+    constexpr int V_rows_per_thread =
+        (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne :
+        (type_V == GGML_TYPE_NVFP4) ? GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD : 4;
+    static_assert(DV % V_rows_per_thread == 0, "bad V rows per thread");
+    constexpr int nthreads_V_nvfp4 = (DV / V_rows_per_thread < 32 ? DV / V_rows_per_thread : 32);
+    constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb :
+                                (type_V == GGML_TYPE_NVFP4) ? nthreads_V_nvfp4 : nthreads_V_q;
 
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(WARP_SIZE % nthreads_V  == 0, "bad nthreads_V");
 
-    constexpr int V_rows_per_thread =
-        (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne :
-        (type_V == GGML_TYPE_NVFP4) ? GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD : 4;
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, DKQ, nthreads_KQ>();
@@ -493,7 +497,12 @@ static __global__ void flash_attn_ext_vec(
         for (int i_VKQ_0 = 0; i_VKQ_0 < DV/2; i_VKQ_0 += nthreads_V*V_rows_per_thread/2) {
             const int i_VKQ = i_VKQ_0 + (nthreads_V == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads_V)*(V_rows_per_thread/2);
 
-            ggml_cuda_memcpy_1<V_rows_per_thread*sizeof(half)>(VKQ_tmp + i_VKQ, &VKQ[j_VKQ][i_VKQ_0/nthreads_V]);
+            if constexpr (V_rows_per_thread == 16) {
+                ggml_cuda_memcpy_1<16>(VKQ_tmp + i_VKQ,     &VKQ[j_VKQ][i_VKQ_0/nthreads_V]);
+                ggml_cuda_memcpy_1<16>(VKQ_tmp + i_VKQ + 4, &VKQ[j_VKQ][i_VKQ_0/nthreads_V + 4]);
+            } else {
+                ggml_cuda_memcpy_1<V_rows_per_thread*sizeof(half)>(VKQ_tmp + i_VKQ, &VKQ[j_VKQ][i_VKQ_0/nthreads_V]);
+            }
         }
 #else
         float2 * VKQ_tmp = (float2 *) KQ + threadIdx.y*(V_cols_per_iter*DV/2)
@@ -508,8 +517,15 @@ static __global__ void flash_attn_ext_vec(
         for (int i_VKQ_0 = 0; i_VKQ_0 < DV/2; i_VKQ_0 += nthreads_V*V_rows_per_thread/2) {
             const int i_VKQ = i_VKQ_0 + (nthreads_V == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads_V)*(V_rows_per_thread/2);
 
-            ggml_cuda_memcpy_1<V_rows_per_thread/2*sizeof(float)>(VKQ_tmp + i_VKQ,                       &VKQ[j_VKQ][i_VKQ_0/nthreads_V]);
-            ggml_cuda_memcpy_1<V_rows_per_thread/2*sizeof(float)>(VKQ_tmp + i_VKQ + V_rows_per_thread/4, &VKQ[j_VKQ][i_VKQ_0/nthreads_V + V_rows_per_thread/4]);
+            if constexpr (V_rows_per_thread == 16) {
+                ggml_cuda_memcpy_1<16>(VKQ_tmp + i_VKQ,     &VKQ[j_VKQ][i_VKQ_0/nthreads_V]);
+                ggml_cuda_memcpy_1<16>(VKQ_tmp + i_VKQ + 2, &VKQ[j_VKQ][i_VKQ_0/nthreads_V + 2]);
+                ggml_cuda_memcpy_1<16>(VKQ_tmp + i_VKQ + 4, &VKQ[j_VKQ][i_VKQ_0/nthreads_V + 4]);
+                ggml_cuda_memcpy_1<16>(VKQ_tmp + i_VKQ + 6, &VKQ[j_VKQ][i_VKQ_0/nthreads_V + 6]);
+            } else {
+                ggml_cuda_memcpy_1<V_rows_per_thread/2*sizeof(float)>(VKQ_tmp + i_VKQ,                       &VKQ[j_VKQ][i_VKQ_0/nthreads_V]);
+                ggml_cuda_memcpy_1<V_rows_per_thread/2*sizeof(float)>(VKQ_tmp + i_VKQ + V_rows_per_thread/4, &VKQ[j_VKQ][i_VKQ_0/nthreads_V + V_rows_per_thread/4]);
+            }
         }
 #endif // V_DOT2_F32_F16_AVAILABLE
 

@@ -655,7 +655,49 @@ template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_nvfp4(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_nvfp4 * x = (const block_nvfp4 *) vx;
 
-    static_assert(ne == 2 || ne == 4 || ne == 8, "bad ne");
+    static_assert(ne == 2 || ne == 4 || ne == 8 || ne == 16, "bad ne");
+    if constexpr (ne == 16) {
+        const int64_t ib = i0 / QK_NVFP4;
+        const int     ir = i0 % QK_NVFP4;
+        const int     s  = ir / QK_NVFP4_SUB;
+        const int     j  = ir % QK_NVFP4_SUB;
+
+        if ((j & (ne - 1)) == 0) {
+            const int qs0 = get_int_b4(x[ib].qs, s*2 + 0);
+            const int qs1 = get_int_b4(x[ib].qs, s*2 + 1);
+            const int2 vals0 = get_int_from_table_16(qs0, kvalues_mxfp4);
+            const int2 vals1 = get_int_from_table_16(qs1, kvalues_mxfp4);
+            const int8_t * q8_0 = (const int8_t *) &vals0.x;
+            const int8_t * q8_1 = (const int8_t *) &vals1.x;
+            const int8_t * q8_2 = (const int8_t *) &vals0.y;
+            const int8_t * q8_3 = (const int8_t *) &vals1.y;
+            const float d = ggml_cuda_ue4m3_to_fp32(x[ib].d[s]);
+
+#ifdef FP16_AVAILABLE
+            if constexpr (std::is_same_v<T, half>) {
+                ((half2 *) dst)[0] = make_half2(d * q8_0[0], d * q8_0[1]);
+                ((half2 *) dst)[1] = make_half2(d * q8_0[2], d * q8_0[3]);
+                ((half2 *) dst)[2] = make_half2(d * q8_1[0], d * q8_1[1]);
+                ((half2 *) dst)[3] = make_half2(d * q8_1[2], d * q8_1[3]);
+                ((half2 *) dst)[4] = make_half2(d * q8_2[0], d * q8_2[1]);
+                ((half2 *) dst)[5] = make_half2(d * q8_2[2], d * q8_2[3]);
+                ((half2 *) dst)[6] = make_half2(d * q8_3[0], d * q8_3[1]);
+                ((half2 *) dst)[7] = make_half2(d * q8_3[2], d * q8_3[3]);
+                return;
+            } else
+#endif // FP16_AVAILABLE
+            if constexpr (std::is_same_v<T, float>) {
+#pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    ((float *) dst)[l]      = d * q8_0[l];
+                    ((float *) dst)[l + 4]  = d * q8_1[l];
+                    ((float *) dst)[l + 8]  = d * q8_2[l];
+                    ((float *) dst)[l + 12] = d * q8_3[l];
+                }
+                return;
+            }
+        }
+    }
     if constexpr (ne == 8) {
         const int64_t ib = i0 / QK_NVFP4;
         const int     ir = i0 % QK_NVFP4;
