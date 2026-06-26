@@ -57,7 +57,6 @@ struct fattn_nvfp4_mtp4_params {
     const uint32_t    * v_lut;
 #if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
     float             * split_partial;
-    half              * split_partial_half;
     float             * split_prob;
     float2            * split_meta;
     int64_t             kv_split_size;
@@ -122,10 +121,9 @@ static fattn_nvfp4_mtp4_params ggml_cuda_fattn_nvfp4_mtp4_make_params(const ggml
     params.dst   = (float *) dst->data;
     params.v_lut = v_lut;
 #if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
-    params.split_partial      = nullptr;
-    params.split_partial_half = nullptr;
-    params.split_prob         = nullptr;
-    params.split_meta         = nullptr;
+    params.split_partial = nullptr;
+    params.split_prob    = nullptr;
+    params.split_meta    = nullptr;
     params.kv_split_size = 0;
     params.kv_split_count = 1;
     params.kv_split_base = 0;
@@ -1946,62 +1944,6 @@ __global__ void fattn_nvfp4_mtp4_split_kv_combine_kernel(const fattn_nvfp4_mtp4_
 }
 #endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
 
-#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && \
-    defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-__global__ void fattn_nvfp4_p1_split_kv_combine_half_kernel(const fattn_nvfp4_mtp4_params params) {
-#if defined(BLACKWELL_MMA_AVAILABLE)
-    const int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    const int64_t total = params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim;
-    if (idx >= total) {
-        return;
-    }
-
-    int64_t rem = idx;
-    const int64_t col = rem % params.v_head_dim;
-    rem /= params.v_head_dim;
-    const int64_t q_row = rem % params.ne_q_rows;
-    rem /= params.ne_q_rows;
-    const int64_t q_head = rem % params.ne_q_heads;
-    rem /= params.ne_q_heads;
-    const int64_t seq = rem;
-
-    float acc = 0.0f;
-    float max_val = -3.402823466e+38F;
-    float rowsum = 0.0f;
-
-    for (int64_t split = 0; split < params.kv_split_count; ++split) {
-        const int64_t meta_idx =
-            ((split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows + q_row;
-        const float2 meta = params.split_meta[meta_idx];
-        if (meta.y == 0.0f) {
-            continue;
-        }
-
-        const int64_t partial_idx =
-            ((((split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows + q_row)
-                * params.v_head_dim + col);
-        const float partial = __half2float(params.split_partial_half[partial_idx]);
-
-        const float max_new = fmaxf(max_val, meta.x);
-        const float scale_acc = max_val - max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(max_val - max_new) : 0.0f;
-        const float scale_add = meta.x   - max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(meta.x   - max_new) : 0.0f;
-
-        acc = acc * scale_acc + partial * scale_add;
-        rowsum = rowsum * scale_acc + meta.y * scale_add;
-        max_val = max_new;
-    }
-
-    float * dst_ptr = params.dst +
-        q_row  * params.dst_stride_row +
-        q_head * params.dst_stride_head +
-        seq    * params.dst_stride_seq;
-    dst_ptr[col] = rowsum == 0.0f ? 0.0f : acc / rowsum;
-#else
-    GGML_UNUSED(params);
-#endif // defined(BLACKWELL_MMA_AVAILABLE)
-}
-#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-
 __global__ void fattn_nvfp4_mtp4_scalar_correctness_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int col = threadIdx.x;
@@ -2082,18 +2024,9 @@ __global__ void fattn_nvfp4_p1_kq8_tc_pv_split_kernel(const fattn_nvfp4_mtp4_par
 
     if (params.ne_q_rows != 1 || q_head >= params.ne_q_heads || seq >= params.ne_seqs ||
             kv_head >= params.ne_kv_heads || kv_start >= kv_end ||
-            params.split_meta == nullptr) {
+            params.split_partial == nullptr || params.split_meta == nullptr) {
         return;
     }
-#if defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-    if (params.split_partial_half == nullptr) {
-        return;
-    }
-#else
-    if (params.split_partial == nullptr) {
-        return;
-    }
-#endif // defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
 
     using tile_A    = ggml_cuda_mma::tile<16, 8, int>;
     using tile_B    = ggml_cuda_mma::tile< 8, 8, int>;
@@ -2291,11 +2224,7 @@ __global__ void fattn_nvfp4_p1_kq8_tc_pv_split_kernel(const fattn_nvfp4_mtp4_par
                     const int64_t partial_idx =
                         ((((kv_split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows)
                             * params.v_head_dim + col);
-#if defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-                    params.split_partial_half[partial_idx] = __float2half_rn(C.x[l]);
-#else
                     params.split_partial[partial_idx] = C.x[l];
-#endif // defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
                 }
             }
         }
@@ -2572,9 +2501,6 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 
 #if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
     ggml_cuda_pool_alloc<float>  split_partial_alloc(ctx.pool());
-#if defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-    ggml_cuda_pool_alloc<half>   split_partial_half_alloc(ctx.pool());
-#endif // defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
 #ifdef GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     ggml_cuda_pool_alloc<float>  split_prob_alloc(ctx.pool());
 #endif // GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
@@ -2590,10 +2516,6 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 #endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
     params.split_partial = split_partial_alloc.alloc(
         (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim);
-#if defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-    params.split_partial_half = split_partial_half_alloc.alloc(
-        (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim);
-#endif // defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
 #ifdef GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     params.split_prob = split_prob_alloc.alloc(
         (size_t) params.kv_split_active_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.kv_split_size);
@@ -2612,11 +2534,7 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
         const int64_t combine_ne = params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim;
         const dim3 combine_block(256, 1, 1);
         const dim3 combine_grid((uint32_t) ((combine_ne + combine_block.x - 1) / combine_block.x), 1, 1);
-#if defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
-        fattn_nvfp4_p1_split_kv_combine_half_kernel<<<combine_grid, combine_block, 0, ctx.stream()>>>(params);
-#else
         fattn_nvfp4_mtp4_split_kv_combine_kernel<<<combine_grid, combine_block, 0, ctx.stream()>>>(params);
-#endif // defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV_HALF_PARTIAL)
         CUDA_CHECK(cudaGetLastError());
         return;
     }
