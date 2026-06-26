@@ -617,6 +617,12 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         if (cublas_handles[i] != nullptr) {
             CUBLAS_CHECK(cublasDestroy(cublas_handles[i]));
         }
+        if (nvfp4_fattn_lut[i] != nullptr) {
+            CUDA_CHECK(cudaFree(nvfp4_fattn_lut[i]));
+        }
+        if (nvfp4_fattn_lut_ready[i] != nullptr) {
+            CUDA_CHECK(cudaEventDestroy(nvfp4_fattn_lut_ready[i]));
+        }
     }
 }
 

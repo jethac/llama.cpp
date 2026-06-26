@@ -2102,9 +2102,50 @@ static void ggml_cuda_flash_attn_ext_nvfp4_mtp4_fill_lut(ggml_backend_cuda_conte
     CUDA_CHECK(cudaGetLastError());
 }
 
-static bool ggml_cuda_flash_attn_ext_nvfp4_row_contiguous(const ggml_tensor * t) {
-    return t->nb[0] == ggml_type_size(t->type) &&
-           t->nb[1] == ggml_row_size(t->type, t->ne[0]);
+static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_stream_capturing(ggml_backend_cuda_context & ctx) {
+    cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+    CUDA_CHECK(cudaStreamIsCapturing(ctx.stream(), &status));
+    return status != cudaStreamCaptureStatusNone;
+}
+
+static uint32_t * ggml_cuda_flash_attn_ext_nvfp4_mtp4_get_lut(ggml_backend_cuda_context & ctx) {
+    uint32_t *& lut = ctx.nvfp4_fattn_lut[ctx.device];
+    cudaEvent_t & ready = ctx.nvfp4_fattn_lut_ready[ctx.device];
+    const bool capturing = ggml_cuda_flash_attn_ext_nvfp4_mtp4_stream_capturing(ctx);
+
+    if (lut == nullptr) {
+        if (capturing) {
+            return nullptr;
+        }
+
+        ggml_cuda_set_device(ctx.device);
+        CUDA_CHECK(cudaMalloc((void **) &lut, FATTN_NVFP4_LUT_SIZE * sizeof(uint32_t)));
+        CUDA_CHECK(cudaEventCreateWithFlags(&ready, cudaEventDisableTiming));
+        ggml_cuda_flash_attn_ext_nvfp4_mtp4_fill_lut(ctx, lut);
+        CUDA_CHECK(cudaEventRecord(ready, ctx.stream()));
+    }
+
+    if (!capturing) {
+        CUDA_CHECK(cudaStreamWaitEvent(ctx.stream(), ready, 0));
+    }
+
+    return lut;
+}
+
+static bool ggml_cuda_flash_attn_ext_nvfp4_strides_supported(const ggml_tensor * t) {
+    const size_t type_size = ggml_type_size(t->type);
+
+    if (t->nb[0] != type_size) {
+        return false;
+    }
+
+    for (int dim = 1; dim < GGML_MAX_DIMS; ++dim) {
+        if (t->nb[dim] % (int64_t) type_size != 0) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static bool ggml_cuda_flash_attn_ext_nvfp4_mask_supported(const ggml_tensor * mask, const ggml_tensor * Q, const ggml_tensor * K) {
@@ -2120,8 +2161,7 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mask_supported(const ggml_tensor * ma
         return false;
     }
 
-    return mask->nb[0] == ggml_type_size(mask->type) &&
-           mask->nb[1] == ggml_row_size(mask->type, mask->ne[0]);
+    return ggml_cuda_flash_attn_ext_nvfp4_strides_supported(mask);
 }
 
 static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, const ggml_tensor * dst) {
@@ -2156,10 +2196,10 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, cons
         return false;
     }
 
-    if (!ggml_cuda_flash_attn_ext_nvfp4_row_contiguous(Q) ||
-        !ggml_cuda_flash_attn_ext_nvfp4_row_contiguous(K) ||
-        !ggml_cuda_flash_attn_ext_nvfp4_row_contiguous(V) ||
-        !ggml_cuda_flash_attn_ext_nvfp4_row_contiguous(KQV)) {
+    if (!ggml_cuda_flash_attn_ext_nvfp4_strides_supported(Q) ||
+        !ggml_cuda_flash_attn_ext_nvfp4_strides_supported(K) ||
+        !ggml_cuda_flash_attn_ext_nvfp4_strides_supported(V) ||
+        !ggml_cuda_flash_attn_ext_nvfp4_strides_supported(KQV)) {
         return false;
     }
 
@@ -2251,9 +2291,13 @@ size_t ggml_cuda_flash_attn_ext_nvfp4_mtp4_get_alloc_size(const ggml_tensor * ds
 }
 
 void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    ggml_cuda_pool_alloc<uint32_t> lut_alloc(ctx.pool(), FATTN_NVFP4_LUT_SIZE);
-    uint32_t * lut = lut_alloc.get();
-    ggml_cuda_flash_attn_ext_nvfp4_mtp4_fill_lut(ctx, lut);
+    uint32_t * lut = ggml_cuda_flash_attn_ext_nvfp4_mtp4_get_lut(ctx);
+    ggml_cuda_pool_alloc<uint32_t> lut_alloc(ctx.pool());
+
+    if (lut == nullptr) {
+        lut = lut_alloc.alloc(FATTN_NVFP4_LUT_SIZE);
+        ggml_cuda_flash_attn_ext_nvfp4_mtp4_fill_lut(ctx, lut);
+    }
 
     fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, lut);
 
