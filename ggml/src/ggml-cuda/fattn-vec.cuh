@@ -1,13 +1,23 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 
+#ifndef GGML_CUDA_FATTN_VEC_NTHREADS
+#define GGML_CUDA_FATTN_VEC_NTHREADS 128
+#endif
+static_assert(GGML_CUDA_FATTN_VEC_NTHREADS == 64 ||
+              GGML_CUDA_FATTN_VEC_NTHREADS == 128 ||
+              GGML_CUDA_FATTN_VEC_NTHREADS == 256 ||
+              GGML_CUDA_FATTN_VEC_NTHREADS == 512,
+              "GGML_CUDA_FATTN_VEC_NTHREADS must be one of: 64, 128, 256, 512");
+static_assert(GGML_CUDA_FATTN_VEC_NTHREADS % WARP_SIZE == 0, "bad vector FlashAttention thread count");
+
 static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
-    return 128;
+    return GGML_CUDA_FATTN_VEC_NTHREADS;
     GGML_UNUSED(cc);
 }
 
 static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
-    return 128;
+    return GGML_CUDA_FATTN_VEC_NTHREADS;
 }
 
 // Currently llvm with the amdgcn target does not support unrolling loops

@@ -125,6 +125,12 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-nvfp4-nvfp4.cu)
     endif()
 
+    set(GGML_CUDA_FATTN_VEC_NTHREADS_VALUES 64 128 256 512)
+    if (NOT GGML_CUDA_FATTN_VEC_NTHREADS IN_LIST GGML_CUDA_FATTN_VEC_NTHREADS_VALUES)
+        message(FATAL_ERROR "GGML_CUDA_FATTN_VEC_NTHREADS must be one of: 64, 128, 256, 512")
+    endif()
+    add_compile_definitions(GGML_CUDA_FATTN_VEC_NTHREADS=${GGML_CUDA_FATTN_VEC_NTHREADS})
+
     set(GGML_CUDA_FATTN_NVFP4_DEFS)
     if (GGML_CUDA_NVFP4_FA)
         string(TOLOWER "${GGML_CUDA_NVFP4_FA_SCHEDULE}" GGML_CUDA_NVFP4_FA_SCHEDULE_LOWER)
