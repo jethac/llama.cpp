@@ -27,7 +27,7 @@ static_assert(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 4 ||
               "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8");
 
 template <ggml_type type_K, ggml_type type_V>
-static constexpr int ggml_cuda_fattn_vec_get_nthreads() {
+static constexpr __host__ __device__ int ggml_cuda_fattn_vec_get_nthreads() {
     if constexpr (type_K == GGML_TYPE_NVFP4 && type_V == GGML_TYPE_NVFP4) {
         return GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS;
     }
