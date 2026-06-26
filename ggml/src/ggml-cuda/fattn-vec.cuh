@@ -4,6 +4,9 @@
 #ifndef GGML_CUDA_FATTN_VEC_NTHREADS
 #define GGML_CUDA_FATTN_VEC_NTHREADS 128
 #endif
+#ifndef GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS
+#define GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS 256
+#endif
 #ifndef GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD
 #define GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD 4
 #endif
@@ -13,17 +16,33 @@ static_assert(GGML_CUDA_FATTN_VEC_NTHREADS == 64 ||
               GGML_CUDA_FATTN_VEC_NTHREADS == 512,
               "GGML_CUDA_FATTN_VEC_NTHREADS must be one of: 64, 128, 256, 512");
 static_assert(GGML_CUDA_FATTN_VEC_NTHREADS % WARP_SIZE == 0, "bad vector FlashAttention thread count");
+static_assert(GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS == 64 ||
+              GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS == 128 ||
+              GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS == 256 ||
+              GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS == 512,
+              "GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS must be one of: 64, 128, 256, 512");
+static_assert(GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS % WARP_SIZE == 0, "bad NVFP4 vector FlashAttention thread count");
 static_assert(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 4 ||
               GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 8,
               "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8");
 
-static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
+template <ggml_type type_K, ggml_type type_V>
+static constexpr int ggml_cuda_fattn_vec_get_nthreads() {
+    if constexpr (type_K == GGML_TYPE_NVFP4 && type_V == GGML_TYPE_NVFP4) {
+        return GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS;
+    }
     return GGML_CUDA_FATTN_VEC_NTHREADS;
+}
+
+template <ggml_type type_K, ggml_type type_V>
+static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
+    return ggml_cuda_fattn_vec_get_nthreads<type_K, type_V>();
     GGML_UNUSED(cc);
 }
 
+template <ggml_type type_K, ggml_type type_V>
 static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
-    return GGML_CUDA_FATTN_VEC_NTHREADS;
+    return ggml_cuda_fattn_vec_get_nthreads<type_K, type_V>();
 }
 
 // Currently llvm with the amdgcn target does not support unrolling loops
@@ -33,7 +52,7 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
 #pragma clang diagnostic ignored "-Wpass-failed"
 #endif // __clang__
 template<int DKQ, int DV, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap>
-__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 1)
+__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device<type_K, type_V>(), 1)
 static __global__ void flash_attn_ext_vec(
         const char * Q_ptr,
         const char * K_ptr,
@@ -99,7 +118,7 @@ static __global__ void flash_attn_ext_vec(
     constexpr int nthreads_V_q  = (DV/4 < 32 ? DV/4 : 32);
 #endif // GGML_USE_HIP
 
-    constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
+    constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device<type_K, type_V>();
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
 
@@ -553,7 +572,7 @@ template <int DKQ, int DV, int cols_per_block, ggml_type type_K, ggml_type type_
 void ggml_cuda_flash_attn_ext_vec_case_impl(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 
-    const int nthreads = ggml_cuda_fattn_vec_get_nthreads_host(cc);
+    const int nthreads = ggml_cuda_fattn_vec_get_nthreads_host<type_K, type_V>(cc);
     const int nwarps   = nthreads / WARP_SIZE;
     fattn_kernel_t fattn_kernel = flash_attn_ext_vec<DKQ, DV, cols_per_block, type_K, type_V, use_logit_softcap>;
     const bool need_f16_K = type_K == GGML_TYPE_F16;
