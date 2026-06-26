@@ -39,7 +39,6 @@ static constexpr int    FATTN_NVFP4_MAX_NCOL_TILE   = FATTN_NVFP4_MAX_HEAD_DIM /
 #ifdef GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 static constexpr int    FATTN_NVFP4_TC_KQ_WARPS     = 1;
 static constexpr int    FATTN_NVFP4_TC_PV_WARPS     = 8;
-static constexpr int    FATTN_NVFP4_P1_TC_PV_WARPS  = 4;
 static constexpr int    FATTN_NVFP4_TC_WARPS        = FATTN_NVFP4_TC_KQ_WARPS + FATTN_NVFP4_TC_PV_WARPS;
 static constexpr int    FATTN_NVFP4_TC_THREADS      = FATTN_NVFP4_TC_WARPS * WARP_SIZE;
 #ifdef GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV
@@ -2053,7 +2052,7 @@ __global__ void fattn_nvfp4_p1_kq8_tc_pv_split_kernel(const fattn_nvfp4_mtp4_par
         q_head * params.q_stride_head +
         seq    * params.q_stride_seq;
 
-    for (int frag = tid; frag < nfrag; frag += FATTN_NVFP4_P1_TC_PV_WARPS * WARP_SIZE) {
+    for (int frag = tid; frag < nfrag; frag += FATTN_NVFP4_TC_PV_WARPS * WARP_SIZE) {
         const block_nvfp4 q_blk = ggml_cuda_fattn_nvfp4_quantize_q_frag(q_ptr, frag);
         const uint32_t * q_qs = reinterpret_cast<const uint32_t *>(q_blk.qs);
 
@@ -2171,8 +2170,8 @@ __global__ void fattn_nvfp4_p1_kq8_tc_pv_split_kernel(const fattn_nvfp4_mtp4_par
     }
     __syncthreads();
 
-    if (warp_id < FATTN_NVFP4_P1_TC_PV_WARPS) {
-        for (int tile_idx = warp_id; tile_idx < ncol_tile; tile_idx += FATTN_NVFP4_P1_TC_PV_WARPS) {
+    if (warp_id < FATTN_NVFP4_TC_PV_WARPS) {
+        for (int tile_idx = warp_id; tile_idx < ncol_tile; tile_idx += FATTN_NVFP4_TC_PV_WARPS) {
             const int col_base = tile_idx * FATTN_NVFP4_PV_COL_TILE;
             tile_C C = {};
 
@@ -2529,7 +2528,7 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
     defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV)
     if (params.ne_q_rows == 1) {
         const dim3 p1_grid((uint32_t) params.ne_q_heads, (uint32_t) (params.ne_seqs * params.kv_split_count), 1);
-        const dim3 p1_block(FATTN_NVFP4_P1_TC_PV_WARPS * WARP_SIZE, 1, 1);
+        const dim3 p1_block(FATTN_NVFP4_TC_PV_WARPS * WARP_SIZE, 1, 1);
         fattn_nvfp4_p1_kq8_tc_pv_split_kernel<<<p1_grid, p1_block, 0, ctx.stream()>>>(params);
 
         const int64_t combine_ne = params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim;
