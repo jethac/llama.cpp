@@ -1944,6 +1944,60 @@ __global__ void fattn_nvfp4_mtp4_split_kv_combine_kernel(const fattn_nvfp4_mtp4_
 }
 #endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
 
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && \
+    defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV)
+__global__ void fattn_nvfp4_p1_split_kv_combine_row_kernel(const fattn_nvfp4_mtp4_params params) {
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    const int64_t q_head = (int64_t) blockIdx.x;
+    const int64_t seq    = (int64_t) blockIdx.y;
+    const int64_t col    = (int64_t) threadIdx.x;
+    const int64_t q_row  = 0;
+
+    if (params.ne_q_rows != 1 || q_head >= params.ne_q_heads || seq >= params.ne_seqs) {
+        return;
+    }
+
+    __shared__ float2 smem_meta;
+
+    float acc = 0.0f;
+    float max_val = -3.402823466e+38F;
+    float rowsum = 0.0f;
+
+    for (int64_t split = 0; split < params.kv_split_count; ++split) {
+        if (threadIdx.x == 0) {
+            const int64_t meta_idx = ((split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows;
+            smem_meta = params.split_meta[meta_idx];
+        }
+        __syncthreads();
+
+        const float2 meta = smem_meta;
+        if (meta.y != 0.0f && col < params.v_head_dim) {
+            const int64_t partial_idx =
+                (((split * params.ne_seqs + seq) * params.ne_q_heads + q_head) * params.ne_q_rows)
+                    * params.v_head_dim + col;
+            const float partial = params.split_partial[partial_idx];
+
+            const float max_new = fmaxf(max_val, meta.x);
+            const float scale_acc = max_val - max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(max_val - max_new) : 0.0f;
+            const float scale_add = meta.x   - max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(meta.x   - max_new) : 0.0f;
+
+            acc = acc * scale_acc + partial * scale_add;
+            rowsum = rowsum * scale_acc + meta.y * scale_add;
+            max_val = max_new;
+        }
+        __syncthreads();
+    }
+
+    if (col < params.v_head_dim) {
+        float * dst_ptr = params.dst + q_head * params.dst_stride_head + seq * params.dst_stride_seq;
+        dst_ptr[col] = rowsum == 0.0f ? 0.0f : acc / rowsum;
+    }
+#else
+    GGML_UNUSED(params);
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
+}
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV) && defined(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV)
+
 __global__ void fattn_nvfp4_mtp4_scalar_correctness_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int col = threadIdx.x;
@@ -2531,10 +2585,9 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
         const dim3 p1_block(FATTN_NVFP4_TC_PV_WARPS * WARP_SIZE, 1, 1);
         fattn_nvfp4_p1_kq8_tc_pv_split_kernel<<<p1_grid, p1_block, 0, ctx.stream()>>>(params);
 
-        const int64_t combine_ne = params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim;
-        const dim3 combine_block(256, 1, 1);
-        const dim3 combine_grid((uint32_t) ((combine_ne + combine_block.x - 1) / combine_block.x), 1, 1);
-        fattn_nvfp4_mtp4_split_kv_combine_kernel<<<combine_grid, combine_block, 0, ctx.stream()>>>(params);
+        const dim3 combine_block((uint32_t) params.v_head_dim, 1, 1);
+        const dim3 combine_grid((uint32_t) params.ne_q_heads, (uint32_t) params.ne_seqs, 1);
+        fattn_nvfp4_p1_split_kv_combine_row_kernel<<<combine_grid, combine_block, 0, ctx.stream()>>>(params);
         CUDA_CHECK(cudaGetLastError());
         return;
     }
