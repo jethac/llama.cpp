@@ -63,6 +63,11 @@ struct fattn_nvfp4_mtp4_params {
     int64_t             kv_split_count;
     int64_t             kv_split_base;
     int64_t             kv_split_active_count;
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    int              * native_pv_v_qs;
+    uint32_t         * native_pv_v_scale;
+    int64_t            native_pv_nkv_tile;
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 #endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 
     float scale;
@@ -128,6 +133,11 @@ static fattn_nvfp4_mtp4_params ggml_cuda_fattn_nvfp4_mtp4_make_params(const ggml
     params.kv_split_count = 1;
     params.kv_split_base = 0;
     params.kv_split_active_count = 1;
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    params.native_pv_v_qs = nullptr;
+    params.native_pv_v_scale = nullptr;
+    params.native_pv_nkv_tile = 0;
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 #endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
     params.scale = scale;
 
@@ -478,6 +488,60 @@ static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_pv_c_j(const int l, 
     return ((lane % 4) * 2) + (l % 2);
 }
 #endif // GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
+
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_quantize_64_words(
+        const float * vals,
+        int *         qs_words,
+        uint32_t &    scale_word) {
+    static_assert(QK_NVFP4 == 64, "unexpected NVFP4 block size");
+    static_assert(QK_NVFP4_SUB == 16, "unexpected NVFP4 sub-block size");
+
+    scale_word = 0;
+
+#pragma unroll
+    for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
+        float amax = 0.0f;
+#pragma unroll
+        for (int j = 0; j < QK_NVFP4_SUB; ++j) {
+            amax = fmaxf(amax, fabsf(vals[sub * QK_NVFP4_SUB + j]));
+        }
+
+        const uint8_t sf = ggml_cuda_fp32_to_ue4m3_sw(amax / 6.0f);
+        scale_word |= (uint32_t) sf << (8 * sub);
+
+        const float d = ggml_cuda_ue4m3_to_fp32(sf);
+        const float inv_scale = d > 0.0f ? 0.5f / d : 0.0f;
+
+        uint32_t packed[2] = {};
+#pragma unroll
+        for (int j = 0; j < QK_NVFP4_SUB / 2; ++j) {
+            const uint8_t q0 = ggml_cuda_float_to_fp4_e2m1(vals[sub * QK_NVFP4_SUB + j], inv_scale);
+            const uint8_t q1 = ggml_cuda_float_to_fp4_e2m1(vals[sub * QK_NVFP4_SUB + j + QK_NVFP4_SUB / 2], inv_scale);
+            const uint32_t byte = (uint32_t) (q0 | (q1 << 4));
+            packed[j / 4] |= byte << (8 * (j % 4));
+        }
+        qs_words[2 * sub + 0] = (int) packed[0];
+        qs_words[2 * sub + 1] = (int) packed[1];
+    }
+}
+
+static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_native_pv_a_i(const int l, const int lane) {
+    return ((l / 2) * 8) + (lane / 4);
+}
+
+static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_native_pv_a_j(const int l, const int lane) {
+    return ((lane % 4) * 2) + (l % 2);
+}
+
+static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_native_pv_b_i(const int /*l*/, const int lane) {
+    return lane / 4;
+}
+
+static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_native_pv_b_j(const int l, const int lane) {
+    return (l * 4) + (lane % 4);
+}
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 
 #ifdef GGML_CUDA_NVFP4_FA_MMA
 static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_store_pv_fragment(
@@ -1577,6 +1641,74 @@ static __device__ __forceinline__ int64_t ggml_cuda_fattn_nvfp4_split_prob_idx(
         * params.kv_split_size + kv_local);
 }
 
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+__global__ void fattn_nvfp4_mtp4_prepack_v_kernel(const fattn_nvfp4_mtp4_params params) {
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    using tile_PV_B = ggml_cuda_mma::tile<8, 8, int>;
+
+    const int64_t ncol_tile = params.v_head_dim / FATTN_NVFP4_PV_COL_TILE;
+    const int64_t tile_id   = (int64_t) blockIdx.x;
+    const int64_t total     =
+        params.kv_split_active_count * params.ne_seqs * params.ne_kv_heads * ncol_tile * params.native_pv_nkv_tile;
+
+    if (tile_id >= total || params.native_pv_v_qs == nullptr || params.native_pv_v_scale == nullptr) {
+        return;
+    }
+
+    int64_t rem = tile_id;
+    const int64_t kv_tile = rem % params.native_pv_nkv_tile;
+    rem /= params.native_pv_nkv_tile;
+    const int64_t col_tile = rem % ncol_tile;
+    rem /= ncol_tile;
+    const int64_t kv_head = rem % params.ne_kv_heads;
+    rem /= params.ne_kv_heads;
+    const int64_t seq = rem % params.ne_seqs;
+    rem /= params.ne_seqs;
+    const int64_t kv_split_local = rem;
+
+    const int64_t kv_start = (params.kv_split_base + kv_split_local) * params.kv_split_size + kv_tile * QK_NVFP4;
+    const int64_t col_base = col_tile * FATTN_NVFP4_PV_COL_TILE;
+
+    int * const      qs_out    = params.native_pv_v_qs    + tile_id * (tile_PV_B::I * tile_PV_B::J);
+    uint32_t * const scale_out = params.native_pv_v_scale + tile_id * tile_PV_B::I;
+
+    if (threadIdx.x == 0) {
+#pragma unroll
+        for (int col = 0; col < FATTN_NVFP4_PV_COL_TILE; ++col) {
+            float vals[QK_NVFP4];
+
+#pragma unroll
+            for (int k = 0; k < QK_NVFP4; ++k) {
+                const int64_t kv_row = kv_start + k;
+                const int64_t v_col  = col_base + col;
+                if (kv_row < params.ne_kv_rows && v_col < params.v_head_dim) {
+                    const block_nvfp4 * v_ptr = params.V +
+                        kv_head * params.v_stride_head +
+                        seq     * params.v_stride_seq +
+                        kv_row  * params.v_stride_row;
+                    vals[k] = ggml_cuda_fattn_nvfp4_dequant_row_value(v_ptr, v_col);
+                } else {
+                    vals[k] = 0.0f;
+                }
+            }
+
+            int qs_words[QK_NVFP4 / 8];
+            uint32_t scale_word;
+            ggml_cuda_fattn_nvfp4_quantize_64_words(vals, qs_words, scale_word);
+
+#pragma unroll
+            for (int word = 0; word < QK_NVFP4 / 8; ++word) {
+                qs_out[col * tile_PV_B::J + word] = qs_words[word];
+            }
+            scale_out[col] = scale_word;
+        }
+    }
+#else
+    GGML_UNUSED(params);
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
+}
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+
 __global__ void fattn_nvfp4_mtp4_split_kq_prob_kernel(const fattn_nvfp4_mtp4_params params) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     const int lane = threadIdx.x & (WARP_SIZE - 1);
@@ -1812,9 +1944,24 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
         return;
     }
 
-    using tile_C    = ggml_cuda_mma::tile<16, 8, float>;
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    if (params.native_pv_v_qs == nullptr || params.native_pv_v_scale == nullptr) {
+        return;
+    }
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+
+    using tile_C = ggml_cuda_mma::tile<16, 8, float>;
+
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    using tile_PV_A = ggml_cuda_mma::tile<16, 8, int>;
+    using tile_PV_B = ggml_cuda_mma::tile< 8, 8, int>;
+
+    __shared__ int native_pv_a_qs[FATTN_NVFP4_TC_PV_WARPS][tile_PV_A::I * tile_PV_A::J];
+    __shared__ uint32_t native_pv_a_scale[FATTN_NVFP4_TC_PV_WARPS][tile_PV_A::I];
+#else
     using tile_PV_A = ggml_cuda_mma::tile<16, 8, half2>;
     using tile_PV_B = ggml_cuda_mma::tile< 8, 8, half2>;
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 
     const int ncol_tile = (int) (params.v_head_dim / FATTN_NVFP4_PV_COL_TILE);
 
@@ -1822,6 +1969,84 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
         const int col_base = tile_idx * FATTN_NVFP4_PV_COL_TILE;
         tile_C C = {};
 
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+#pragma unroll 1
+        for (int64_t kv_local = 0; kv_local < kv_count; kv_local += QK_NVFP4) {
+            int * const      a_qs    = native_pv_a_qs[warp_id];
+            uint32_t * const a_scale = native_pv_a_scale[warp_id];
+
+            const int64_t native_pv_split   = kv_split - params.kv_split_base;
+            const int64_t native_pv_kv_tile = kv_local / QK_NVFP4;
+            const int64_t native_pv_tile_id =
+                ((((native_pv_split * params.ne_seqs + seq) * params.ne_kv_heads + kv_head) * ncol_tile + tile_idx)
+                    * params.native_pv_nkv_tile + native_pv_kv_tile);
+            const int * const      b_qs    = params.native_pv_v_qs    + native_pv_tile_id * (tile_PV_B::I * tile_PV_B::J);
+            const uint32_t * const b_scale = params.native_pv_v_scale + native_pv_tile_id * tile_PV_B::I;
+
+            for (int i = lane; i < tile_PV_A::I * tile_PV_A::J; i += WARP_SIZE) {
+                a_qs[i] = 0;
+            }
+            for (int i = lane; i < tile_PV_A::I; i += WARP_SIZE) {
+                a_scale[i] = 0;
+            }
+
+            __syncwarp();
+
+            if (lane == 0) {
+#pragma unroll
+                for (int row = 0; row < FATTN_NVFP4_MTP4_ROWS; ++row) {
+                    float vals[QK_NVFP4];
+
+#pragma unroll
+                    for (int k = 0; k < QK_NVFP4; ++k) {
+                        const int64_t q_row = q_row_base + row;
+                        vals[k] = q_row < params.ne_q_rows && kv_local + k < kv_count ?
+                            params.split_prob[ggml_cuda_fattn_nvfp4_split_prob_idx(params, kv_split, seq, q_head, q_row, kv_local + k)] :
+                            0.0f;
+                    }
+
+                    int qs_words[QK_NVFP4 / 8];
+                    uint32_t scale_word;
+                    ggml_cuda_fattn_nvfp4_quantize_64_words(vals, qs_words, scale_word);
+
+#pragma unroll
+                    for (int word = 0; word < QK_NVFP4 / 8; ++word) {
+                        a_qs[row * tile_PV_A::J + word] = qs_words[word];
+                    }
+                    a_scale[row] = scale_word;
+                }
+            }
+
+            __syncwarp();
+
+            tile_PV_A A;
+            tile_PV_B B;
+            tile_C C_chunk = {};
+
+#pragma unroll
+            for (int l = 0; l < tile_PV_A::ne; ++l) {
+                const int row = ggml_cuda_fattn_nvfp4_native_pv_a_i(l, lane);
+                const int col = ggml_cuda_fattn_nvfp4_native_pv_a_j(l, lane);
+                A.x[l] = a_qs[row * tile_PV_A::J + col];
+            }
+
+#pragma unroll
+            for (int l = 0; l < tile_PV_B::ne; ++l) {
+                const int row = ggml_cuda_fattn_nvfp4_native_pv_b_i(l, lane);
+                const int col = ggml_cuda_fattn_nvfp4_native_pv_b_j(l, lane);
+                B.x[l] = b_qs[row * tile_PV_B::J + col];
+            }
+
+            const int tidx_A = lane / 4 + (lane % 2) * 8;
+            const int tidx_B = lane / 4;
+            ggml_cuda_mma::mma_block_scaled_fp4<GGML_TYPE_NVFP4>(C_chunk, A, B, a_scale[tidx_A], b_scale[tidx_B]);
+
+#pragma unroll
+            for (int l = 0; l < tile_C::ne; ++l) {
+                C.x[l] += C_chunk.x[l];
+            }
+        }
+#else
 #pragma unroll 1
         for (int64_t kv_local = 0; kv_local < kv_count; kv_local += 2) {
             const int64_t kv_row0 = kv_start + kv_local;
@@ -1869,6 +2094,7 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
 
             ggml_cuda_mma::mma(C, A, B);
         }
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 
 #pragma unroll
         for (int l = 0; l < tile_C::ne; ++l) {
@@ -2268,6 +2494,10 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
     ggml_cuda_pool_alloc<float>  split_partial_alloc(ctx.pool());
 #ifdef GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     ggml_cuda_pool_alloc<float>  split_prob_alloc(ctx.pool());
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    ggml_cuda_pool_alloc<int>      native_pv_v_qs_alloc(ctx.pool());
+    ggml_cuda_pool_alloc<uint32_t> native_pv_v_scale_alloc(ctx.pool());
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 #endif // GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     ggml_cuda_pool_alloc<float2> split_meta_alloc(ctx.pool());
 
@@ -2284,6 +2514,15 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
 #ifdef GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     params.split_prob = split_prob_alloc.alloc(
         (size_t) params.kv_split_active_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.kv_split_size);
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    params.native_pv_nkv_tile = (params.kv_split_size + QK_NVFP4 - 1) / QK_NVFP4;
+    const int64_t native_pv_ncol_tile = params.v_head_dim / FATTN_NVFP4_PV_COL_TILE;
+    const size_t native_pv_tile_count =
+        (size_t) params.kv_split_active_count * params.ne_seqs * params.ne_kv_heads *
+        native_pv_ncol_tile * params.native_pv_nkv_tile;
+    params.native_pv_v_qs = native_pv_v_qs_alloc.alloc(native_pv_tile_count * 64);
+    params.native_pv_v_scale = native_pv_v_scale_alloc.alloc(native_pv_tile_count * FATTN_NVFP4_PV_COL_TILE);
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
 #endif // GGML_CUDA_NVFP4_FA_MMA_DECOUPLED
     params.split_meta = split_meta_alloc.alloc(
         (size_t) params.kv_split_count * params.ne_seqs * params.ne_q_heads * params.ne_q_rows);
@@ -2303,10 +2542,32 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
             min((int64_t) GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS, params.kv_split_count - kv_split_base);
         const dim3 window_blocks_num(blocks_num.x, blocks_num.y, (uint32_t) (params.ne_seqs * params.kv_split_active_count));
         fattn_nvfp4_mtp4_split_kq_prob_kernel<<<window_blocks_num, kq_prob_block, 0, ctx.stream()>>>(params);
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+        {
+            const int64_t native_pv_ncol_tile = params.v_head_dim / FATTN_NVFP4_PV_COL_TILE;
+            const int64_t native_pv_tile_count =
+                params.kv_split_active_count * params.ne_seqs * params.ne_kv_heads *
+                native_pv_ncol_tile * params.native_pv_nkv_tile;
+            const dim3 prepack_block(WARP_SIZE, 1, 1);
+            const dim3 prepack_grid((uint32_t) native_pv_tile_count, 1, 1);
+            fattn_nvfp4_mtp4_prepack_v_kernel<<<prepack_grid, prepack_block, 0, ctx.stream()>>>(params);
+        }
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
         fattn_nvfp4_mtp4_split_pv_from_prob_kernel<<<window_blocks_num, pv_block, 0, ctx.stream()>>>(params);
     }
 #else
     fattn_nvfp4_mtp4_split_kq_prob_kernel<<<blocks_num, kq_prob_block, 0, ctx.stream()>>>(params);
+#if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+    {
+        const int64_t native_pv_ncol_tile = params.v_head_dim / FATTN_NVFP4_PV_COL_TILE;
+        const int64_t native_pv_tile_count =
+            params.kv_split_active_count * params.ne_seqs * params.ne_kv_heads *
+            native_pv_ncol_tile * params.native_pv_nkv_tile;
+        const dim3 prepack_block(WARP_SIZE, 1, 1);
+        const dim3 prepack_grid((uint32_t) native_pv_tile_count, 1, 1);
+        fattn_nvfp4_mtp4_prepack_v_kernel<<<prepack_grid, prepack_block, 0, ctx.stream()>>>(params);
+    }
+#endif // defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
     fattn_nvfp4_mtp4_split_pv_from_prob_kernel<<<blocks_num, pv_block, 0, ctx.stream()>>>(params);
 #endif // defined(GGML_CUDA_NVFP4_FA_ACTIVE_DECOUPLED_WINDOW_SPLITS)
 #else

@@ -216,13 +216,15 @@ option(GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW
                                             "ggml: prefer experimental Blackwell NVFP4 MTP4 path over the vector small-row path" OFF)
 option(GGML_CUDA_NVFP4_FA_VEC_ALL_ROWS
                                             "ggml: allow experimental Blackwell NVFP4 vector FlashAttention for all supported Q rows" OFF)
+option(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT
+                                            "ggml: use experimental Blackwell native FP4 PV with runtime V-tile requantization" OFF)
 option(GGML_CUDA_NVFP4_FAST_KV_QUANT        "ggml: use experimental faster CUDA NVFP4 KV write quantizer" OFF)
 set(GGML_CUDA_FATTN_VEC_NTHREADS "128" CACHE STRING "ggml: CUDA FlashAttention vector kernel threads per block")
 set_property(CACHE GGML_CUDA_FATTN_VEC_NTHREADS PROPERTY STRINGS "64;128;256;512")
 set(GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS "256" CACHE STRING "ggml: CUDA FlashAttention vector kernel threads per block for NVFP4 K/V")
 set_property(CACHE GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS PROPERTY STRINGS "64;128;256;512")
 set(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD "8" CACHE STRING "ggml: CUDA FlashAttention vector kernel NVFP4 V rows per thread")
-set_property(CACHE GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD PROPERTY STRINGS "4;8")
+set_property(CACHE GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD PROPERTY STRINGS "4;8;16")
 set(GGML_CUDA_FWHT_ROWS_PER_BLOCK "4" CACHE STRING "ggml: CUDA FWHT rows per block")
 set_property(CACHE GGML_CUDA_FWHT_ROWS_PER_BLOCK PROPERTY STRINGS "1;2;4;8;16")
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
