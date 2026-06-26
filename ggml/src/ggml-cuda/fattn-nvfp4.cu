@@ -2532,7 +2532,7 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
         fattn_nvfp4_p1_kq8_tc_pv_split_kernel<<<p1_grid, p1_block, 0, ctx.stream()>>>(params);
 
         const int64_t combine_ne = params.ne_seqs * params.ne_q_heads * params.ne_q_rows * params.v_head_dim;
-        const dim3 combine_block(256, 1, 1);
+        const dim3 combine_block(512, 1, 1);
         const dim3 combine_grid((uint32_t) ((combine_ne + combine_block.x - 1) / combine_block.x), 1, 1);
         fattn_nvfp4_mtp4_split_kv_combine_kernel<<<combine_grid, combine_block, 0, ctx.stream()>>>(params);
         CUDA_CHECK(cudaGetLastError());
