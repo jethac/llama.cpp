@@ -436,6 +436,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     const int cc = ggml_cuda_info().devices[device].cc;
 
+#if defined(GGML_CUDA_NVFP4_FA_P1_SINGLEWARP)
+    if (Q->ne[1] == 1 && ggml_cuda_flash_attn_ext_nvfp4_mtp4_supported(device, dst)) {
+        return BEST_FATTN_KERNEL_NVFP4_MTP4;
+    }
+#endif
+
 #if !defined(GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW)
     if (ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(device, dst)) {
         return BEST_FATTN_KERNEL_VEC;

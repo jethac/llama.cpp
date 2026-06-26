@@ -214,6 +214,8 @@ set(GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS "128" CACHE STRING "ggml: KV rows per split
 set(GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS "16" CACHE STRING "ggml: split windows per launch for Blackwell native NVFP4 FlashAttention")
 option(GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW
                                             "ggml: prefer experimental Blackwell NVFP4 MTP4 path over the vector small-row path" OFF)
+option(GGML_CUDA_NVFP4_FA_P1_SINGLEWARP
+                                            "ggml: use experimental single-warp native NVFP4 MTP4 path for one-row decode" OFF)
 option(GGML_CUDA_NVFP4_FAST_KV_QUANT        "ggml: use experimental faster CUDA NVFP4 KV write quantizer" OFF)
 set(GGML_CUDA_FATTN_VEC_NTHREADS "128" CACHE STRING "ggml: CUDA FlashAttention vector kernel threads per block")
 set_property(CACHE GGML_CUDA_FATTN_VEC_NTHREADS PROPERTY STRINGS "64;128;256;512")
