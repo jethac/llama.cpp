@@ -163,6 +163,9 @@ if (CUDAToolkit_FOUND)
     if (GGML_CUDA_NVFP4_FA AND GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW)
         set_source_files_properties(fattn.cu PROPERTIES COMPILE_DEFINITIONS GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW)
     endif()
+    if (GGML_CUDA_NVFP4_FAST_KV_QUANT)
+        add_compile_definitions(GGML_CUDA_NVFP4_FAST_KV_QUANT)
+    endif()
 
     ggml_add_backend_library(ggml-cuda
                              ${GGML_HEADERS_CUDA}

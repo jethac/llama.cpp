@@ -272,6 +272,36 @@ static __device__ void quantize_f32_nvfp4_block(const float * __restrict__ x, bl
     }
 }
 
+static __device__ void quantize_f32_nvfp4_block_fast(const float * __restrict__ x, block_nvfp4 * __restrict__ y) {
+    static_assert(QK_NVFP4 == 64, "unexpected NVFP4 block size");
+    static_assert(QK_NVFP4_SUB == 16, "unexpected NVFP4 sub-block size");
+
+#pragma unroll
+    for (int s = 0; s < QK_NVFP4/QK_NVFP4_SUB; ++s) {
+        const float * xb = x + s*QK_NVFP4_SUB;
+
+        float amax = 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < QK_NVFP4_SUB; ++j) {
+            const float v = xb[j];
+            amax = fmaxf(amax, fabsf(v));
+        }
+
+        const uint8_t ue = ggml_cuda_fp32_to_ue4m3_sw(amax / 6.0f);
+        y->d[s] = ue;
+        const float d = ggml_cuda_ue4m3_to_fp32(ue);
+        const float inv_scale = d > 0.0f ? 0.5f / d : 0.0f;
+
+#pragma unroll
+        for (int j = 0; j < QK_NVFP4_SUB/2; ++j) {
+            const uint8_t q0 = ggml_cuda_float_to_fp4_e2m1(xb[j],                    inv_scale);
+            const uint8_t q1 = ggml_cuda_float_to_fp4_e2m1(xb[j + QK_NVFP4_SUB/2],   inv_scale);
+            y->qs[s*(QK_NVFP4_SUB/2) + j] = q0 | (q1 << 4);
+        }
+    }
+}
+
 // Wrapper functions for cpy.cu compatibility
 static __device__ void cpy_blck_f32_q4_0(const char * cxi, char * cdsti) {
     quantize_f32_q4_0_block((const float *)cxi, (block_q4_0 *)cdsti);
