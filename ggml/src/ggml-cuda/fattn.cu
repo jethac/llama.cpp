@@ -325,6 +325,7 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
     FATTN_VEC_CASE(256, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+    FATTN_VEC_CASE(512, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     GGML_ABORT("fatal error");
@@ -353,7 +354,11 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(const int devi
         return false;
     }
 
-    if (Q->ne[0] != 256 || K->ne[0] != 256 || V->ne[0] != 256 || KQV->ne[0] != 256 || Q->ne[1] != 1) {
+    const bool supported_dims =
+        (Q->ne[0] == 256 && K->ne[0] == 256 && V->ne[0] == 256 && KQV->ne[0] == 256) ||
+        (Q->ne[0] == 512 && K->ne[0] == 512 && V->ne[0] == 256 && KQV->ne[0] == 256);
+
+    if (!supported_dims || Q->ne[1] != 1) {
         return false;
     }
 
