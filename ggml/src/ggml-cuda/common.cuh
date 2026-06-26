@@ -1395,6 +1395,8 @@ struct ggml_backend_cuda_context {
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};
+    uint32_t * nvfp4_fattn_lut[GGML_CUDA_MAX_DEVICES] = { nullptr };
+    cudaEvent_t nvfp4_fattn_lut_ready[GGML_CUDA_MAX_DEVICES] = { nullptr };
 
     int curr_stream_no = 0;
 

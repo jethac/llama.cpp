@@ -206,6 +206,9 @@ option(GGML_CUDA_NO_PEER_COPY               "ggml: do not use peer to peer copie
 option(GGML_CUDA_NO_VMM                     "ggml: do not try to use CUDA VMM"                OFF)
 option(GGML_CUDA_FA                         "ggml: compile ggml FlashAttention CUDA kernels"  ON)
 option(GGML_CUDA_FA_ALL_QUANTS              "ggml: compile all quants for FlashAttention"     OFF)
+option(GGML_CUDA_NVFP4_FA                   "ggml: enable Blackwell native NVFP4 FlashAttention path" OFF)
+set(GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS "128" CACHE STRING "ggml: KV rows per split for Blackwell native NVFP4 FlashAttention")
+set(GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS "16" CACHE STRING "ggml: split windows per launch for Blackwell native NVFP4 FlashAttention")
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
 option(GGML_CUDA_NCCL                       "ggml: use NVIDIA Collective Comm. Library"       ON)
 set   (GGML_CUDA_COMPRESSION_MODE "size" CACHE STRING

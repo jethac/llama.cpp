@@ -121,7 +121,24 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-f16-f16.cu
             template-instances/fattn-vec-instance-q4_0-q4_0.cu
             template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            template-instances/fattn-vec-instance-bf16-bf16.cu)
+            template-instances/fattn-vec-instance-bf16-bf16.cu
+            template-instances/fattn-vec-instance-nvfp4-nvfp4.cu)
+    endif()
+
+    set(GGML_CUDA_FATTN_NVFP4_DEFS)
+    if (GGML_CUDA_NVFP4_FA)
+        if (GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS LESS_EQUAL 0)
+            message(FATAL_ERROR "GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS must be positive")
+        endif()
+        if (GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS LESS_EQUAL 0)
+            message(FATAL_ERROR "GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS must be positive")
+        endif()
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA)
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS=${GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS})
+        list(APPEND GGML_CUDA_FATTN_NVFP4_DEFS GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS=${GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS})
+    endif()
+    if (GGML_CUDA_FATTN_NVFP4_DEFS)
+        set_source_files_properties(fattn-nvfp4.cu PROPERTIES COMPILE_DEFINITIONS "${GGML_CUDA_FATTN_NVFP4_DEFS}")
     endif()
 
     ggml_add_backend_library(ggml-cuda

@@ -1,6 +1,7 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 #include "fattn-mma-f16.cuh"
+#include "fattn-nvfp4.cuh"
 #include "fattn-tile.cuh"
 #include "fattn-vec.cuh"
 #include "fattn-wmma-f16.cuh"
@@ -242,20 +243,20 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
     }
 }
 
-#define FATTN_VEC_CASE(D, type_K, type_V)                                                                        \
+#define FATTN_VEC_CASE(DKQ, DV, type_K, type_V)                                                                 \
     {                                                                                                            \
         const bool type_K_okay = K->type == (type_K) || (K->type == GGML_TYPE_F32 && (type_K) == GGML_TYPE_F16); \
         const bool type_V_okay = V->type == (type_V) || (V->type == GGML_TYPE_F32 && (type_V) == GGML_TYPE_F16); \
-        if (Q->ne[0] == (D) && type_K_okay && type_V_okay) {                                                     \
-            ggml_cuda_flash_attn_ext_vec_case<D, type_K, type_V>(ctx, dst);                                      \
+        if (Q->ne[0] == (DKQ) && V->ne[0] == (DV) && type_K_okay && type_V_okay) {                               \
+            ggml_cuda_flash_attn_ext_vec_case<DKQ, DV, type_K, type_V>(ctx, dst);                                \
             return;                                                                                              \
         }                                                                                                        \
     }                                                                                                            \
 
 #define FATTN_VEC_CASES_ALL_D(type_K, type_V) \
-    FATTN_VEC_CASE( 64, type_K, type_V)       \
-    FATTN_VEC_CASE(128, type_K, type_V)       \
-    FATTN_VEC_CASE(256, type_K, type_V)       \
+    FATTN_VEC_CASE( 64,  64, type_K, type_V) \
+    FATTN_VEC_CASE(128, 128, type_K, type_V) \
+    FATTN_VEC_CASE(256, 256, type_K, type_V) \
 
 static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
@@ -323,9 +324,71 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
+    FATTN_VEC_CASE(256, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+    FATTN_VEC_CASE(512, 512, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+    FATTN_VEC_CASE(512, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     GGML_ABORT("fatal error");
+}
+
+static bool ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(const int device, const ggml_tensor * dst) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const ggml_tensor * KQV   = dst;
+    const ggml_tensor * Q     = dst->src[0];
+    const ggml_tensor * K     = dst->src[1];
+    const ggml_tensor * V     = dst->src[2];
+    const ggml_tensor * mask  = dst->src[3];
+    const ggml_tensor * sinks = dst->src[4];
+
+    if (Q == nullptr || K == nullptr || V == nullptr || mask == nullptr) {
+        return false;
+    }
+
+    const int cc = ggml_cuda_info().devices[device].cc;
+    if (!blackwell_mma_available(cc)) {
+        return false;
+    }
+
+    if (Q->type != GGML_TYPE_F32 || KQV->type != GGML_TYPE_F32 || K->type != GGML_TYPE_NVFP4 || V->type != GGML_TYPE_NVFP4) {
+        return false;
+    }
+
+    const bool supported_dims =
+        (Q->ne[0] == 256 && K->ne[0] == 256 && V->ne[0] == 256 && KQV->ne[0] == 256) ||
+        (Q->ne[0] == 512 && K->ne[0] == 512 && V->ne[0] == 512 && KQV->ne[0] == 512) ||
+        (Q->ne[0] == 512 && K->ne[0] == 512 && V->ne[0] == 256 && KQV->ne[0] == 256);
+
+    if (!supported_dims || Q->ne[1] != 1) {
+        return false;
+    }
+
+    if (K->ne[1] != V->ne[1] || K->ne[2] != V->ne[2] || K->ne[3] != V->ne[3]) {
+        return false;
+    }
+
+    if (Q->ne[2] % K->ne[2] != 0 || Q->ne[2] == K->ne[2] || Q->ne[3] != K->ne[3]) {
+        return false;
+    }
+
+    if (mask->type != GGML_TYPE_F16 || mask->ne[0] != K->ne[1] || mask->ne[1] != Q->ne[1] || mask->ne[2] != 1) {
+        return false;
+    }
+
+    if (mask->ne[3] != 1 && mask->ne[3] != Q->ne[3]) {
+        return false;
+    }
+
+    if (sinks != nullptr || K->ne[1] % FATTN_KQ_STRIDE != 0) {
+        return false;
+    }
+
+    float max_bias = 0.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&max_bias,      (const float *) KQV->op_params + 1, sizeof(float));
+    memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+    return max_bias == 0.0f && logit_softcap == 0.0f;
 }
 
 // Best FlashAttention kernel for a specific GPU:
@@ -335,6 +398,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_WMMA_F16 = 300,
     BEST_FATTN_KERNEL_MMA_F16  = 400,
+    BEST_FATTN_KERNEL_NVFP4_MTP4 = 500,
 };
 
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
@@ -371,6 +435,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     const int cc = ggml_cuda_info().devices[device].cc;
+
+    if (ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(device, dst)) {
+        return BEST_FATTN_KERNEL_VEC;
+    }
+
+    if (ggml_cuda_flash_attn_ext_nvfp4_mtp4_supported(device, dst)) {
+        return BEST_FATTN_KERNEL_NVFP4_MTP4;
+    }
 
     switch (K->ne[0]) {
         case  40:
@@ -440,7 +512,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
-            break;
         default:
             return BEST_FATTN_KERNEL_NONE;
     }
@@ -449,9 +520,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_NONE;
     }
 
-    // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
+    if (K->type == GGML_TYPE_NVFP4 || V->type == GGML_TYPE_NVFP4) {
+        return BEST_FATTN_KERNEL_NONE;
+    }
+
+    // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes.
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
-    const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    const bool can_use_vector_kernel =
+        Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
@@ -562,13 +638,18 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             need_f16_K = K->type == GGML_TYPE_F32;
             need_f16_V = V->type == GGML_TYPE_F32;
             break;
+        case BEST_FATTN_KERNEL_NVFP4_MTP4:
+            break;
         case BEST_FATTN_KERNEL_NONE:
             break;
     }
 
+    if (kernel == BEST_FATTN_KERNEL_NVFP4_MTP4) {
+        return ggml_cuda_flash_attn_ext_nvfp4_mtp4_get_alloc_size(dst);
+    }
+
     const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
         ggml_cuda_flash_attn_ext_get_f16_extra_data(dst, need_f16_K, need_f16_V);
-
     return f16_extra.end - (uintptr_t) dst->data;
 }
 
@@ -588,6 +669,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_NVFP4_MTP4:
+            ggml_cuda_flash_attn_ext_nvfp4_mtp4(ctx, dst);
             break;
     }
 }

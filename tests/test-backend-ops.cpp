@@ -189,6 +189,34 @@ static void init_tensor_kq_mask(ggml_tensor * tensor, float min = -1.0f, float m
     ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
 }
 
+// generate a causal sliding-window F16 mask, matching the local-attention shape used by SWA layers
+static void init_tensor_kq_mask_swa(ggml_tensor * tensor, int64_t n_swa) {
+    GGML_ASSERT(tensor->type == GGML_TYPE_F16);
+    GGML_ASSERT(n_swa > 0);
+
+    GGML_TENSOR_LOCALS(int64_t, ne, tensor, ne);
+
+    std::vector<float>       data_f32(ne0*ne1*ne2*ne3);
+    std::vector<ggml_fp16_t> data_f16(ne0*ne1*ne2*ne3);
+
+    for (int64_t i3 = 0; i3 < ne3; ++i3) {
+        for (int64_t i2 = 0; i2 < ne2; ++i2) {
+            for (int64_t iq = 0; iq < ne1; ++iq) {
+                const int64_t q_pos = ne0 - ne1 + iq;
+                for (int64_t ikv = 0; ikv < ne0; ++ikv) {
+                    const bool masked = ikv > q_pos || ikv + n_swa <= q_pos;
+                    const size_t idx = i3*ne2*ne1*ne0 + i2*ne1*ne0 + iq*ne0 + ikv;
+                    data_f32[idx] = masked ? -INFINITY : 0.0f;
+                }
+            }
+        }
+    }
+
+    ggml_fp32_to_fp16_row(data_f32.data(), data_f16.data(), ne0*ne1*ne2*ne3);
+
+    ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
+}
+
 // generate a lower triangular matrix
 static void init_tensor_tril(ggml_tensor * tensor, float min = -1.0f, float max = 1.0f) {
     GGML_ASSERT(tensor->type == GGML_TYPE_F32);
@@ -6513,13 +6541,26 @@ struct test_flash_attn_ext : public test_case {
     const ggml_type type_K;
     const ggml_type type_V;
     std::array<int32_t, 4> permute;
+    const int64_t n_swa; // sliding-window mask size; 0 uses the random mask
 
     std::string vars() override {
-        return VARS_TO_STR14(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute);
+        return VARS_TO_STR15(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute, n_swa);
     }
 
     double max_nmse_err() override {
         return 5e-4;
+    }
+
+    double max_nmse_err(ggml_backend_t backend) override {
+        // Native Blackwell FP4 FA dynamically quantizes Q activations to FP4
+        // before KQ, so its error floor is higher than the dequantized-K/V
+        // scalar reference but much lower than the generic FP4 matmul limit.
+        if ((type_K == GGML_TYPE_MXFP4 || type_K == GGML_TYPE_NVFP4 ||
+             type_V == GGML_TYPE_MXFP4 || type_V == GGML_TYPE_NVFP4) &&
+                backend_has_feature(backend, "BLACKWELL_NATIVE_FP4")) {
+            return 2e-3;
+        }
+        return max_nmse_err();
     }
 
     uint64_t op_flops(ggml_tensor * t) override {
@@ -6531,9 +6572,10 @@ struct test_flash_attn_ext : public test_case {
 
     test_flash_attn_ext(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 32, std::array<int64_t, 2> nr23 = {1, 1}, int64_t kv = 96, int64_t nb = 8,
                         bool mask = true, bool sinks = false, float max_bias = 0.0f, float logit_softcap = 0.0f, ggml_prec prec = GGML_PREC_F32,
-                        ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3})
+                        ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3},
+                        int64_t n_swa = 0)
         : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), max_bias(max_bias), logit_softcap(logit_softcap), prec(prec),
-          type_K(type_K), type_V(type_V), permute(permute) {}
+          type_K(type_K), type_V(type_V), permute(permute), n_swa(n_swa) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int64_t hsk_padded = GGML_PAD(hsk, ggml_blck_size(type_K));
@@ -6605,7 +6647,11 @@ struct test_flash_attn_ext : public test_case {
                 // make the sink values more noticeable in order to trigger a test failure when the implementation is wrong
                 init_tensor_uniform(t, -10.0f, 10.0f);
             } else if (strcmp(t->name, "m") == 0) {
-                init_tensor_kq_mask(t);
+                if (n_swa > 0) {
+                    init_tensor_kq_mask_swa(t, n_swa);
+                } else {
+                    init_tensor_kq_mask(t);
+                }
             } else {
                 init_tensor_uniform(t);
             }
@@ -9144,6 +9190,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(128, 64, 4, {1, 1}, 128, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q1_0, GGML_TYPE_Q4_0));
     test_cases.emplace_back(new test_flash_attn_ext(64, 128, 4, {1, 1}, 128, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q1_0));
     test_cases.emplace_back(new test_flash_attn_ext(128, 64, 4, {1, 1}, 64, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q1_0, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {1, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {1, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {1, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {8, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {8, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {8, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {8, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 512, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {8, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {8, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 1, {4, 1}, 256, 8, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 2, 1, 3}, 128));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));
@@ -9467,6 +9526,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             }
         }
     }
+
+    // Gemma-family Blackwell FP4 shapes. Default CUDA builds decline these rows;
+    // Blackwell production builds with GGML_CUDA_NVFP4_FA enabled use them as a
+    // stable backend-op correctness/perf target.
+    for (int hs : {256, 512}) {
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16,   GGML_TYPE_F16));
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {8, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16,   GGML_TYPE_F16));
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 4, {8, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    }
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {1, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 4096, 4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {8, 1}, 4096, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {8, 1}, 4096, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 4096, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
 
     for (int col : {8192, 16384, 32768, 65536, 131072, 262144, 524288}) {
         for (int rows : {1, 4, 16}){
