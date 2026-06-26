@@ -4,12 +4,18 @@
 #ifndef GGML_CUDA_FATTN_VEC_NTHREADS
 #define GGML_CUDA_FATTN_VEC_NTHREADS 128
 #endif
+#ifndef GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD
+#define GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD 4
+#endif
 static_assert(GGML_CUDA_FATTN_VEC_NTHREADS == 64 ||
               GGML_CUDA_FATTN_VEC_NTHREADS == 128 ||
               GGML_CUDA_FATTN_VEC_NTHREADS == 256 ||
               GGML_CUDA_FATTN_VEC_NTHREADS == 512,
               "GGML_CUDA_FATTN_VEC_NTHREADS must be one of: 64, 128, 256, 512");
 static_assert(GGML_CUDA_FATTN_VEC_NTHREADS % WARP_SIZE == 0, "bad vector FlashAttention thread count");
+static_assert(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 4 ||
+              GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD == 8,
+              "GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD must be one of: 4, 8");
 
 static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
     return GGML_CUDA_FATTN_VEC_NTHREADS;
@@ -100,7 +106,9 @@ static __global__ void flash_attn_ext_vec(
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(WARP_SIZE % nthreads_V  == 0, "bad nthreads_V");
 
-    constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne : 4;
+    constexpr int V_rows_per_thread =
+        (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne :
+        (type_V == GGML_TYPE_NVFP4) ? GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD : 4;
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, DKQ, nthreads_KQ>();
