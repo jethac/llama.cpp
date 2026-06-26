@@ -656,6 +656,36 @@ static __device__ __forceinline__ void dequantize_V_nvfp4(const void * __restric
     const block_nvfp4 * x = (const block_nvfp4 *) vx;
 
     static_assert(ne == 2 || ne == 4, "bad ne");
+    if constexpr (ne == 4) {
+        const int64_t ib = i0 / QK_NVFP4;
+        const int     ir = i0 % QK_NVFP4;
+        const int     s  = ir / QK_NVFP4_SUB;
+        const int     j  = ir % QK_NVFP4_SUB;
+
+        if ((j & (ne - 1)) == 0) {
+            const int qs = get_int_b4(x[ib].qs, s*2 + (j % (QK_NVFP4_SUB/2))/int(sizeof(int)));
+            const int2 vals = get_int_from_table_16(qs, kvalues_mxfp4);
+            const int q = j < QK_NVFP4_SUB/2 ? vals.x : vals.y;
+            const int8_t * q8 = (const int8_t *) &q;
+            const float d = ggml_cuda_ue4m3_to_fp32(x[ib].d[s]);
+
+#ifdef FP16_AVAILABLE
+            if constexpr (std::is_same_v<T, half>) {
+                ((half2 *) dst)[0] = make_half2(d * q8[0], d * q8[1]);
+                ((half2 *) dst)[1] = make_half2(d * q8[2], d * q8[3]);
+                return;
+            } else
+#endif // FP16_AVAILABLE
+            if constexpr (std::is_same_v<T, float>) {
+#pragma unroll
+                for (int l = 0; l < ne; ++l) {
+                    ((float *) dst)[l] = d * q8[l];
+                }
+                return;
+            }
+        }
+    }
+
     float vals[ne];
 
 #pragma unroll
