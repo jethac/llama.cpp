@@ -175,13 +175,15 @@ static dim3 ggml_cuda_fattn_nvfp4_mtp4_blocks(const fattn_nvfp4_mtp4_params & pa
         (uint32_t) grid_z);
 }
 
-#if defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV)
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && \
+    !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) && \
+    !defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 static int ggml_cuda_fattn_nvfp4_ncol_group(const int64_t head_dim) {
     GGML_ASSERT(head_dim % (FATTN_NVFP4_PV_COL_TILE * FATTN_NVFP4_PV_COL_TILES_PER_CTA) == 0);
     GGML_ASSERT(head_dim <= FATTN_NVFP4_MAX_HEAD_DIM);
     return (int) (head_dim / FATTN_NVFP4_PV_COL_TILE / FATTN_NVFP4_PV_COL_TILES_PER_CTA);
 }
-#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV)
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && !defined(GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV) && !defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP)
 
 static __device__ __forceinline__ uint32_t ggml_cuda_fattn_nvfp4_half2_bits(const half2 v) {
     union {
@@ -2261,22 +2263,6 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
     }
 
     fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, lut);
-
-#if defined(GGML_CUDA_NVFP4_FA_P1_SINGLEWARP) && defined(GGML_CUDA_NVFP4_FA_MMA)
-    if (params.ne_q_rows == 1) {
-        const dim3 blocks_num = ggml_cuda_fattn_nvfp4_mtp4_blocks(params);
-        const dim3 block_dim(WARP_SIZE, 1, 1);
-#ifdef GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
-        fattn_nvfp4_mtp4_kernel<<<blocks_num, block_dim, 0, ctx.stream()>>>(params);
-#else
-        const int ncol_group = ggml_cuda_fattn_nvfp4_ncol_group(params.v_head_dim);
-        const dim3 blocks_num_tc(blocks_num.x * ncol_group, blocks_num.y, blocks_num.z);
-        fattn_nvfp4_mtp4_kernel<<<blocks_num_tc, block_dim, 0, ctx.stream()>>>(params);
-#endif // GGML_CUDA_NVFP4_FA_MMA_SCALAR_PV
-        CUDA_CHECK(cudaGetLastError());
-        return;
-    }
-#endif // defined(GGML_CUDA_NVFP4_FA_P1_SINGLEWARP) && defined(GGML_CUDA_NVFP4_FA_MMA)
 
 #if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
     ggml_cuda_pool_alloc<float>  split_partial_alloc(ctx.pool());
