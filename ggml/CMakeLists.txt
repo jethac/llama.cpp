@@ -223,6 +223,8 @@ set(GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS "256" CACHE STRING "ggml: CUDA FlashAtten
 set_property(CACHE GGML_CUDA_FATTN_VEC_NVFP4_NTHREADS PROPERTY STRINGS "64;128;256;512")
 set(GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD "8" CACHE STRING "ggml: CUDA FlashAttention vector kernel NVFP4 V rows per thread")
 set_property(CACHE GGML_CUDA_FATTN_VEC_NVFP4_V_ROWS_PER_THREAD PROPERTY STRINGS "4;8")
+set(GGML_CUDA_FWHT_ROWS_PER_BLOCK "4" CACHE STRING "ggml: CUDA FWHT rows per block")
+set_property(CACHE GGML_CUDA_FWHT_ROWS_PER_BLOCK PROPERTY STRINGS "1;2;4;8;16")
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
 option(GGML_CUDA_NCCL                       "ggml: use NVIDIA Collective Comm. Library"       ON)
 set   (GGML_CUDA_COMPRESSION_MODE "size" CACHE STRING
