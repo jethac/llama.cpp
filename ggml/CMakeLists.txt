@@ -212,6 +212,8 @@ set(GGML_CUDA_NVFP4_FA_SCHEDULE "decoupled" CACHE STRING
 set_property(CACHE GGML_CUDA_NVFP4_FA_SCHEDULE PROPERTY STRINGS "decoupled;twopass;split;fused")
 set(GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS "128" CACHE STRING "ggml: KV rows per split for Blackwell native NVFP4 FlashAttention")
 set(GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS "16" CACHE STRING "ggml: split windows per launch for Blackwell native NVFP4 FlashAttention")
+option(GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW
+                                            "ggml: prefer experimental Blackwell NVFP4 MTP4 path over the vector small-row path" OFF)
 option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
 option(GGML_CUDA_NCCL                       "ggml: use NVIDIA Collective Comm. Library"       ON)
 set   (GGML_CUDA_COMPRESSION_MODE "size" CACHE STRING
