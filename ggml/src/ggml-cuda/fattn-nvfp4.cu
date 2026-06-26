@@ -2251,9 +2251,10 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(int device, cons
         return false;
     }
 
-    // Match the MTP4 roofline shape for the first backend POC. Wider or non-MTP
-    // batches need their own measured shape before they can claim native support.
-    if (Q->ne[1] < 4 || Q->ne[1] % 4 != 0) {
+    // The kernels execute four-row MTP tiles, but internally mask rows beyond
+    // the actual query count. This lets normal one-token decode use the native
+    // path without claiming a separate single-row optimized schedule.
+    if (Q->ne[1] < 1) {
         return false;
     }
 
