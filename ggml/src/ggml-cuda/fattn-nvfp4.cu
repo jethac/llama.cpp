@@ -2006,6 +2006,165 @@ __global__ void fattn_nvfp4_mtp4_scalar_correctness_kernel(const fattn_nvfp4_mtp
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
 
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_P1_SCALAR_PV)
+__global__ void fattn_nvfp4_p1_scalar_pv_kernel(const fattn_nvfp4_mtp4_params params) {
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    const int lane = threadIdx.x & (WARP_SIZE - 1);
+
+    const int64_t q_head  = (int64_t) blockIdx.x;
+    const int64_t seq     = (int64_t) blockIdx.y;
+    const int64_t kv_head = q_head / params.gqa_ratio;
+
+    if (q_head >= params.ne_q_heads || seq >= params.ne_seqs || kv_head >= params.ne_kv_heads || params.ne_q_rows != 1) {
+        return;
+    }
+
+    using tile_A = ggml_cuda_mma::tile<16, 8, int>;
+    using tile_B = ggml_cuda_mma::tile< 8, 8, int>;
+    using tile_C = ggml_cuda_mma::tile<16, 8, float>;
+
+    const int nfrag = (int) (params.k_head_dim / QK_NVFP4);
+
+    __shared__ int      q_tile[FATTN_NVFP4_MAX_NFRAG][tile_A::J];
+    __shared__ uint32_t q_tile_scale[FATTN_NVFP4_MAX_NFRAG];
+    __shared__ int      kq_a_tile[tile_A::I * tile_A::J];
+    __shared__ int      kq_b_tile[tile_B::I * tile_B::J];
+    __shared__ uint32_t kq_a_scale[tile_A::I];
+    __shared__ uint32_t kq_b_scale[tile_B::I];
+
+    const float * q_ptr = params.Q +
+        q_head * params.q_stride_head +
+        seq    * params.q_stride_seq;
+
+    for (int frag = lane; frag < nfrag; frag += WARP_SIZE) {
+        const block_nvfp4 q_blk = ggml_cuda_fattn_nvfp4_quantize_q_frag(q_ptr, frag);
+        const uint32_t * q_qs = reinterpret_cast<const uint32_t *>(q_blk.qs);
+
+#pragma unroll
+        for (int k = 0; k < tile_A::J; ++k) {
+            q_tile[frag][k] = (int) q_qs[k];
+        }
+        q_tile_scale[frag] = ggml_cuda_fattn_nvfp4_block_scale(q_blk);
+    }
+    __syncwarp();
+
+    static_assert(FATTN_NVFP4_MAX_HEAD_DIM % WARP_SIZE == 0, "p1 scalar PV assumes warp-strided head columns");
+    float pv[FATTN_NVFP4_MAX_HEAD_DIM / WARP_SIZE];
+
+#pragma unroll
+    for (int col_slot = 0; col_slot < FATTN_NVFP4_MAX_HEAD_DIM / WARP_SIZE; ++col_slot) {
+        pv[col_slot] = 0.0f;
+    }
+
+    float kq_max = -3.402823466e+38F;
+    float rowsum = 0.0f;
+
+#pragma unroll 1
+    for (int64_t kv_row = 0; kv_row < params.ne_kv_rows; ++kv_row) {
+        const block_nvfp4 * k_ptr = params.K +
+            kv_head * params.k_stride_head +
+            seq     * params.k_stride_seq +
+            kv_row  * params.k_stride_row;
+
+        tile_C kq_tile = {};
+
+        for (int q_frag = 0; q_frag < nfrag; ++q_frag) {
+            const block_nvfp4 k_blk = k_ptr[q_frag];
+
+            const uint32_t * k_qs = reinterpret_cast<const uint32_t *>(k_blk.qs);
+            const uint32_t k_scale = ggml_cuda_fattn_nvfp4_block_scale(k_blk);
+
+            for (int i = lane; i < tile_A::I * tile_A::J; i += WARP_SIZE) {
+                kq_a_tile[i] = 0;
+            }
+            for (int i = lane; i < tile_B::I * tile_B::J; i += WARP_SIZE) {
+                kq_b_tile[i] = 0;
+            }
+            for (int i = lane; i < tile_A::I; i += WARP_SIZE) {
+                kq_a_scale[i] = 0;
+            }
+            for (int i = lane; i < tile_B::I; i += WARP_SIZE) {
+                kq_b_scale[i] = k_scale;
+            }
+            __syncwarp();
+
+            for (int k = lane; k < tile_A::J; k += WARP_SIZE) {
+                kq_a_tile[k] = q_tile[q_frag][k];
+            }
+            for (int i = lane; i < tile_B::J; i += WARP_SIZE) {
+                kq_b_tile[i] = (int) k_qs[i];
+            }
+            if (lane == 0) {
+                kq_a_scale[0] = q_tile_scale[q_frag];
+            }
+            __syncwarp();
+
+            tile_A A;
+            tile_B B;
+            ggml_cuda_mma::load_ldmatrix(A, kq_a_tile, tile_A::J);
+            ggml_cuda_mma::load_generic(B, kq_b_tile, tile_B::J);
+
+            const int tidx_A = threadIdx.x / 4 + (threadIdx.x % 2) * 8;
+            const int tidx_B = threadIdx.x / 4;
+            ggml_cuda_mma::mma_block_scaled_fp4<GGML_TYPE_NVFP4>(
+                kq_tile, A, B, kq_a_scale[tidx_A], kq_b_scale[tidx_B]);
+        }
+
+        float local_score = 0.0f;
+
+#pragma unroll
+        for (int l = 0; l < tile_C::ne; ++l) {
+            if (tile_C::get_i(l) == 0 && tile_C::get_j(l) == 0) {
+                local_score += kq_tile.x[l];
+            }
+        }
+
+#pragma unroll
+        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+            local_score += __shfl_down_sync(0xffffffff, local_score, offset);
+        }
+        const float kq_score = __shfl_sync(0xffffffff, local_score, 0);
+
+        const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, 0, kv_row, seq);
+        const float score = kq_score * params.scale + mask;
+        const float kq_max_new = fmaxf(kq_max, score);
+        const float scale_old = rowsum == 0.0f ? 0.0f : expf(kq_max - kq_max_new);
+        const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
+
+        const block_nvfp4 * v_ptr = params.V +
+            kv_head * params.v_stride_head +
+            seq     * params.v_stride_seq +
+            kv_row  * params.v_stride_row;
+
+#pragma unroll
+        for (int col_slot = 0; col_slot < FATTN_NVFP4_MAX_HEAD_DIM / WARP_SIZE; ++col_slot) {
+            const int col = lane + col_slot * WARP_SIZE;
+            if (col < params.v_head_dim) {
+                pv[col_slot] = pv[col_slot] * scale_old + scale_new * ggml_cuda_fattn_nvfp4_dequant_row_value(v_ptr, col);
+            }
+        }
+
+        rowsum = rowsum * scale_old + scale_new;
+        kq_max = kq_max_new;
+    }
+
+    float * dst_ptr = params.dst +
+        q_head * params.dst_stride_head +
+        seq    * params.dst_stride_seq;
+
+#pragma unroll
+    for (int col_slot = 0; col_slot < FATTN_NVFP4_MAX_HEAD_DIM / WARP_SIZE; ++col_slot) {
+        const int col = lane + col_slot * WARP_SIZE;
+        if (col < params.v_head_dim) {
+            dst_ptr[col] = rowsum == 0.0f ? 0.0f : pv[col_slot] / rowsum;
+        }
+    }
+#else
+    GGML_UNUSED(params);
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
+}
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_P1_SCALAR_PV)
+
 __global__ void fattn_nvfp4_mtp4_compile_probe(
         const block_nvfp4 * q,
         const block_nvfp4 * k,
@@ -2263,6 +2422,16 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
     }
 
     fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, lut);
+
+#if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_P1_SCALAR_PV)
+    if (params.ne_q_rows == 1) {
+        const dim3 blocks_num((uint32_t) params.ne_q_heads, (uint32_t) params.ne_seqs, 1);
+        const dim3 block_dim(WARP_SIZE, 1, 1);
+        fattn_nvfp4_p1_scalar_pv_kernel<<<blocks_num, block_dim, 0, ctx.stream()>>>(params);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
+#endif // defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_P1_SCALAR_PV)
 
 #if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
     ggml_cuda_pool_alloc<float>  split_partial_alloc(ctx.pool());
