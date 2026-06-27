@@ -6814,6 +6814,10 @@ struct test_flash_attn_ext_nvfp4_vx_set_rows : public test_case {
 };
 
 struct test_flash_attn_ext_nvfp4_vx_pv_patterns : public test_flash_attn_ext_nvfp4_vx_set_rows {
+    static constexpr int64_t h  = 256;
+    static constexpr int64_t nh = 1;
+    static constexpr int64_t nr = 4;
+    static constexpr int64_t kv = 128;
     static constexpr int64_t n_patterns = 5;
 
     int64_t pattern;
