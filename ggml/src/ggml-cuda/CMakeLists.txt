@@ -99,6 +99,18 @@ if (CUDAToolkit_FOUND)
     endif()
     message(STATUS "Using CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES} CMAKE_CUDA_ARCHITECTURES_NATIVE=${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
 
+    if (GGML_CUDA_NVFP4_FA)
+        set(GGML_CUDA_NVFP4_FA_HAS_BLACKWELL_ARCH OFF)
+        foreach(ARCH IN LISTS CMAKE_CUDA_ARCHITECTURES)
+            if (ARCH MATCHES "^12[0-9]a(-real)?$")
+                set(GGML_CUDA_NVFP4_FA_HAS_BLACKWELL_ARCH ON)
+            endif()
+        endforeach()
+        if (NOT GGML_CUDA_NVFP4_FA_HAS_BLACKWELL_ARCH)
+            message(FATAL_ERROR "GGML_CUDA_NVFP4_FA=ON requires a Blackwell architecture such as 120a-real or 121a-real in CMAKE_CUDA_ARCHITECTURES")
+        endif()
+    endif()
+
     file(GLOB   GGML_HEADERS_CUDA "*.cuh")
     list(APPEND GGML_HEADERS_CUDA "../../include/ggml-cuda.h")
 

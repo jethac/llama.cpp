@@ -214,37 +214,38 @@ static std::string devices_to_string(const std::vector<ggml_backend_dev_t> & dev
     return join(names, "/");
 }
 
-static bool backend_reg_has_feature(ggml_backend_reg_t reg, const char * feature_name, const char * feature_value) {
-    auto * get_features = (ggml_backend_get_features_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_get_features");
-    if (!get_features) {
-        return false;
-    }
-
-    const ggml_backend_feature * features = get_features(reg);
-    if (!features) {
-        return false;
-    }
-
-    for (const ggml_backend_feature * f = features; f->name; ++f) {
-        if (strcmp(f->name, feature_name) == 0 && strcmp(f->value, feature_value) == 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool backend_dev_has_blackwell_native_fp4(ggml_backend_dev_t dev) {
+static bool backend_dev_supports_nvfp4_fa(ggml_backend_dev_t dev) {
     if (dev == nullptr || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
         return false;
     }
 
-    return backend_reg_has_feature(ggml_backend_dev_backend_reg(dev), "BLACKWELL_NATIVE_FP4", "1");
+    ggml_init_params ctx_params = {
+        /*.mem_size   =*/ 32*ggml_tensor_overhead(),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+
+    ggml_context * ctx = ggml_init(ctx_params);
+    if (ctx == nullptr) {
+        return false;
+    }
+
+    ggml_tensor * q    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32,   256,   1, 8, 1);
+    ggml_tensor * k    = ggml_new_tensor_4d(ctx, GGML_TYPE_NVFP4, 256, 256, 1, 1);
+    ggml_tensor * v    = ggml_new_tensor_4d(ctx, GGML_TYPE_NVFP4, 256, 256, 1, 1);
+    ggml_tensor * mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,   256,   1, 1, 1);
+    ggml_tensor * fa   = ggml_flash_attn_ext(ctx, q, k, v, mask, 1.0f, 0.0f, 0.0f);
+
+    const bool supported = ggml_backend_dev_supports_op(dev, fa);
+
+    ggml_free(ctx);
+
+    return supported;
 }
 
-static bool any_auto_device_has_blackwell_native_fp4() {
+static bool any_auto_device_supports_nvfp4_fa() {
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-        if (backend_dev_has_blackwell_native_fp4(ggml_backend_dev_get(i))) {
+        if (backend_dev_supports_nvfp4_fa(ggml_backend_dev_get(i))) {
             return true;
         }
     }
@@ -254,6 +255,12 @@ static bool any_auto_device_has_blackwell_native_fp4() {
 
 static bool contains_nvfp4(const std::vector<ggml_type> & types) {
     return std::find(types.begin(), types.end(), GGML_TYPE_NVFP4) != types.end();
+}
+
+static bool contains_not_nvfp4(const std::vector<ggml_type> & types) {
+    return std::find_if(types.begin(), types.end(), [](ggml_type type) {
+        return type != GGML_TYPE_NVFP4;
+    }) != types.end();
 }
 
 // command line params
@@ -455,15 +462,42 @@ static bool validate_nvfp4_kv_support(const cmd_params & params) {
         return true;
     }
 
+    if (contains_not_nvfp4(params.type_k) || contains_not_nvfp4(params.type_v)) {
+        fprintf(stderr,
+            "%s: error: nvfp4 KV cache benchmarks require both cache type lists to contain only nvfp4 "
+            "(cache-type-k=%s, cache-type-v=%s)\n",
+            __func__,
+            join(transform_to_str(params.type_k, ggml_type_name), ",").c_str(),
+            join(transform_to_str(params.type_v, ggml_type_name), ",").c_str());
+        return false;
+    }
+
+    if (std::find(params.flash_attn.begin(), params.flash_attn.end(), LLAMA_FLASH_ATTN_TYPE_DISABLED) != params.flash_attn.end()) {
+        fprintf(stderr,
+            "%s: error: nvfp4 KV cache benchmarks require Flash Attention enabled or auto "
+            "(flash-attn=%s)\n",
+            __func__,
+            join(transform_to_str(params.flash_attn, llama_flash_attn_type_name), ",").c_str());
+        return false;
+    }
+
+    if (std::find(params.no_kv_offload.begin(), params.no_kv_offload.end(), true) != params.no_kv_offload.end()) {
+        fprintf(stderr,
+            "%s: error: nvfp4 KV cache benchmarks require KV offload\n",
+            __func__);
+        return false;
+    }
+
     for (const auto & devices : params.devices) {
         bool supported = false;
 
         if (devices.empty()) {
-            supported = any_auto_device_has_blackwell_native_fp4();
+            supported = any_auto_device_supports_nvfp4_fa();
         } else {
+            supported = true;
             for (auto * dev : devices) {
-                if (backend_dev_has_blackwell_native_fp4(dev)) {
-                    supported = true;
+                if (!backend_dev_supports_nvfp4_fa(dev)) {
+                    supported = false;
                     break;
                 }
             }
@@ -471,7 +505,7 @@ static bool validate_nvfp4_kv_support(const cmd_params & params) {
 
         if (!supported) {
             fprintf(stderr,
-                "%s: error: nvfp4 KV cache requires a CUDA Blackwell backend advertising BLACKWELL_NATIVE_FP4=1 "
+                "%s: error: nvfp4 KV cache requires selected CUDA Blackwell device(s) with NVFP4 Flash Attention support "
                 "(cache-type-k=%s, cache-type-v=%s, devices=%s)\n",
                 __func__,
                 join(transform_to_str(params.type_k, ggml_type_name), ",").c_str(),

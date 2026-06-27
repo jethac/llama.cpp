@@ -1279,9 +1279,10 @@ ggml_tensor * llm_graph_context::build_ffn(
      llm_ffn_op_type   type_op,
    llm_ffn_gate_type   type_gate,
                  int   il) const {
-    // NVFP4 support is currently restricted to
+    // Imported NVFP4 weight support is currently restricted to
     // 1) LORA absence (*_s would be applied after LORA residual, which is incorrect)
-    // 2) bias absense (*_s would be applied after bias addition, which is incorrect)
+    // 2) bias absence (*_s would be applied after bias addition, which is incorrect)
+    // NVFP4 KV cache support is a separate Blackwell-only Flash Attention path.
     // TODO: disambiguate LLM-architectural scales (which use *_s) from NVFP4 scale_2 (which also uses *_s currently)
     auto has_lora = [this](ggml_tensor * w) {
         if (!w) {
