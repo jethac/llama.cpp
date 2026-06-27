@@ -1043,6 +1043,9 @@ bool ggml_cuda_nvfp4_kx_prepare(ggml_backend_cuda_context & ctx, const ggml_tens
     }
 
     const ggml_cuda_nvfp4_kx_layout layout = ggml_cuda_nvfp4_kx_get_or_create(ctx, K);
+    if (ggml_cuda_nvfp4_kx_has_direct_updates(ctx, K)) {
+        return true;
+    }
 
     const int64_t k_stride_row  = ggml_cuda_nvfp4_kx_stride_blocks(K, 1);
     const int64_t k_stride_head = ggml_cuda_nvfp4_kx_stride_blocks(K, 2);
@@ -1178,6 +1181,7 @@ static bool ggml_cuda_nvfp4_kx_after_set_rows_t(
         k_stride_row,
         logical_k_head_dim);
     CUDA_CHECK(cudaGetLastError());
+    ggml_cuda_nvfp4_kx_mark_direct_updates(ctx, dst);
     return true;
 }
 

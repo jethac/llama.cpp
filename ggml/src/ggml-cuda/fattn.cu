@@ -9,12 +9,19 @@
 
 #include <cstdlib>
 
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+#include "nvfp4-kv-exec.cuh"
+
+#include <cmath>
+#endif
+
 static bool ggml_cuda_nvfp4_fattn_trace_enabled() {
     const char * env = std::getenv("GGML_CUDA_NVFP4_FA_TRACE");
     return env != nullptr && env[0] != '\0' && env[0] != '0';
 }
 
-static void ggml_cuda_nvfp4_fattn_trace(const char * marker, const ggml_tensor * dst) {
+static void ggml_cuda_nvfp4_fattn_trace(
+        ggml_backend_cuda_context & ctx, const char * marker, const ggml_tensor * dst) {
     if (!ggml_cuda_nvfp4_fattn_trace_enabled() || dst == nullptr) {
         return;
     }
@@ -30,18 +37,28 @@ static void ggml_cuda_nvfp4_fattn_trace(const char * marker, const ggml_tensor *
         return;
     }
 
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    ggml_cuda_nvfp4_kx_layout kx_layout = {};
+    ggml_cuda_nvfp4_vx_layout vx_layout = {};
+    const bool kx_found  = K->type == GGML_TYPE_NVFP4 && ggml_cuda_nvfp4_kx_find(ctx, K, &kx_layout);
+    const bool vx_found  = V->type == GGML_TYPE_NVFP4 && ggml_cuda_nvfp4_vx_find(ctx, V, &vx_layout);
+    const bool kx_direct = K->type == GGML_TYPE_NVFP4 && ggml_cuda_nvfp4_kx_has_direct_updates(ctx, K);
+    const bool vx_direct = V->type == GGML_TYPE_NVFP4 && ggml_cuda_nvfp4_vx_has_direct_updates(ctx, V);
+
+    GGML_LOG_INFO(
+        "%s: nvfp4_fattn_dispatch=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld kx_layout=%d vx_layout=%d kx_direct=%d vx_direct=%d\n",
+        __func__, marker, ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
+        (long long) Q->ne[0], (long long) V->ne[0], (long long) Q->ne[1], (long long) K->ne[1],
+        (long long) Q->ne[2], (long long) K->ne[2],
+        kx_found ? 1 : 0, vx_found ? 1 : 0, kx_direct ? 1 : 0, vx_direct ? 1 : 0);
+#else
     GGML_LOG_INFO(
         "%s: nvfp4_fattn_dispatch=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld\n",
         __func__, marker, ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
         (long long) Q->ne[0], (long long) V->ne[0], (long long) Q->ne[1], (long long) K->ne[1],
         (long long) Q->ne[2], (long long) K->ne[2]);
-}
-
-#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
-#include "nvfp4-kv-exec.cuh"
-
-#include <cmath>
 #endif
+}
 
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
 static bool ggml_cuda_flash_attn_ext_vec_stream_capturing(ggml_backend_cuda_context & ctx) {
@@ -352,18 +369,18 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
 #if defined(GGML_CUDA_NVFP4_FA) && defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
     if (ggml_cuda_flash_attn_ext_nvfp4_p1_kx_mma(ctx, dst)) {
-        ggml_cuda_nvfp4_fattn_trace("nvfp4-kx-native-kq", dst);
+        ggml_cuda_nvfp4_fattn_trace(ctx, "nvfp4-kx-native-kq", dst);
         return;
     }
 #endif
     if (ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar(ctx, dst)) {
-        ggml_cuda_nvfp4_fattn_trace("nvfp4-vx-scalar", dst);
+        ggml_cuda_nvfp4_fattn_trace(ctx, "nvfp4-vx-scalar", dst);
         return;
     }
 #endif
 
     if (K->type == GGML_TYPE_NVFP4 || V->type == GGML_TYPE_NVFP4) {
-        ggml_cuda_nvfp4_fattn_trace("nvfp4-vector-logical-kv", dst);
+        ggml_cuda_nvfp4_fattn_trace(ctx, "nvfp4-vector-logical-kv", dst);
     }
 
 #ifdef GGML_CUDA_FA_ALL_QUANTS
@@ -802,7 +819,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_NVFP4_MTP4:
-            ggml_cuda_nvfp4_fattn_trace("nvfp4-mtp4-logical-kv", dst);
+            ggml_cuda_nvfp4_fattn_trace(ctx, "nvfp4-mtp4-logical-kv", dst);
             ggml_cuda_flash_attn_ext_nvfp4_mtp4(ctx, dst);
             break;
     }
