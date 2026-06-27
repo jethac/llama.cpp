@@ -2303,11 +2303,9 @@ __global__ void fattn_nvfp4_mtp4_scalar_correctness_kernel(const fattn_nvfp4_mtp
 
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
-template <bool use_vx>
 __global__ void fattn_nvfp4_p1_kx_mma_kernel(
         const fattn_nvfp4_mtp4_params params,
-        const ggml_cuda_nvfp4_kx_layout kx_layout,
-        const ggml_cuda_nvfp4_vx_layout vx_layout) {
+        const ggml_cuda_nvfp4_kx_layout kx_layout) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
     using tile_A = ggml_cuda_mma::tile<16, 8, int>;
     using tile_B = ggml_cuda_mma::tile< 8, 8, int>;
@@ -2424,16 +2422,11 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
             const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
 
             if (col < params.v_head_dim) {
-                float v;
-                if constexpr (use_vx) {
-                    v = ggml_cuda_nvfp4_vx_dequant_value(vx_layout, seq, kv_head, kv_row, col);
-                } else {
-                    const block_nvfp4 * v_ptr = params.V +
-                        kv_head * params.v_stride_head +
-                        seq     * params.v_stride_seq +
-                        kv_row  * params.v_stride_row;
-                    v = ggml_cuda_fattn_nvfp4_dequant_row_value(v_ptr, col);
-                }
+                const block_nvfp4 * v_ptr = params.V +
+                    kv_head * params.v_stride_head +
+                    seq     * params.v_stride_seq +
+                    kv_row  * params.v_stride_row;
+                const float v = ggml_cuda_fattn_nvfp4_dequant_row_value(v_ptr, col);
                 pv = pv * scale_old + scale_new * v;
             }
             rowsum = rowsum * scale_old + scale_new;
@@ -2446,7 +2439,7 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
         dst_ptr[col] = rowsum == 0.0f ? 0.0f : pv / rowsum;
     }
 #else
-    GGML_UNUSED_VARS(params, kx_layout, vx_layout);
+    GGML_UNUSED_VARS(params, kx_layout);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
 #endif // defined(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
@@ -2772,24 +2765,17 @@ bool ggml_cuda_flash_attn_ext_nvfp4_p1_kx_mma(ggml_backend_cuda_context & ctx, g
     }
 
     const ggml_tensor * K = dst->src[1];
-    const ggml_tensor * V = dst->src[2];
 
     ggml_cuda_nvfp4_kx_layout kx_layout = {};
     if (!ggml_cuda_nvfp4_kx_find(ctx, K, &kx_layout)) {
         return false;
     }
-    ggml_cuda_nvfp4_vx_layout vx_layout = {};
-    const bool use_vx = ggml_cuda_nvfp4_vx_find(ctx, V, &vx_layout);
 
     const fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, nullptr);
     const int64_t col_block_count = (params.v_head_dim + WARP_SIZE - 1) / WARP_SIZE;
     const dim3 block(WARP_SIZE, (uint32_t) col_block_count, 1);
     const dim3 grid((uint32_t) params.ne_q_heads, (uint32_t) params.ne_seqs, 1);
-    if (use_vx) {
-        fattn_nvfp4_p1_kx_mma_kernel<true><<<grid, block, 0, ctx.stream()>>>(params, kx_layout, vx_layout);
-    } else {
-        fattn_nvfp4_p1_kx_mma_kernel<false><<<grid, block, 0, ctx.stream()>>>(params, kx_layout, vx_layout);
-    }
+    fattn_nvfp4_p1_kx_mma_kernel<<<grid, block, 0, ctx.stream()>>>(params, kx_layout);
     CUDA_CHECK(cudaGetLastError());
     return true;
 }
