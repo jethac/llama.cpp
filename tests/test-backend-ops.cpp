@@ -6915,6 +6915,63 @@ struct test_flash_attn_ext_nvfp4_vx_pv_patterns : public test_flash_attn_ext_nvf
     }
 };
 
+struct test_flash_attn_ext_nvfp4_vx_pv_tile_probe : public test_flash_attn_ext_nvfp4_vx_pv_patterns {
+    int64_t probe_row;
+
+    test_flash_attn_ext_nvfp4_vx_pv_tile_probe(int64_t probe_row) : probe_row(probe_row) {}
+
+    std::string vars() override {
+        return "h=" + std::to_string(h) + ",kv=" + std::to_string(kv) + ",row=" + std::to_string(probe_row);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "FLASH_ATTN_EXT_NVFP4_VX_PV_TILE_PROBE";
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_view_op(t->op)) {
+                continue;
+            }
+
+            if (strcmp(t->name, "q") == 0) {
+                std::vector<float> data(ggml_nelements(t), 0.0f);
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "k") == 0) {
+                init_quant_tensor(t, [](int64_t, int64_t) { return 0.0f; });
+            } else if (strcmp(t->name, "v") == 0) {
+                init_quant_tensor(t, [](int64_t row, int64_t col) {
+                    return -0.45f + 0.0030f*(float) row + 0.0017f*(float) (col % 37);
+                });
+            } else if (strcmp(t->name, "m_pattern") == 0) {
+                init_probe_mask(t, probe_row);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+
+    void init_probe_mask(ggml_tensor * t, int64_t row) const {
+        GGML_ASSERT(t->type == GGML_TYPE_F16);
+        GGML_ASSERT(t->ne[0] == kv);
+        GGML_ASSERT(t->ne[1] == 1);
+        GGML_ASSERT(row >= 0 && row < kv);
+
+        std::vector<float> data_f32(ggml_nelements(t), -INFINITY);
+        data_f32[row] = 0.0f;
+
+        const int64_t sentinel_row = row < kv/2 ? kv - 1 : 0;
+        if (sentinel_row != row) {
+            data_f32[sentinel_row] = -32.0f;
+        }
+
+        std::vector<ggml_fp16_t> data_f16(ggml_nelements(t));
+        ggml_fp32_to_fp16_row(data_f32.data(), data_f16.data(), data_f32.size());
+        ggml_backend_tensor_set(t, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
+    }
+};
+
 struct test_flash_attn_ext_nvfp4_kx_set_rows : public test_flash_attn_ext_nvfp4_vx_set_rows {
     static constexpr int64_t anchor_row = 127;
 
@@ -9570,6 +9627,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_set_rows());
     for (int64_t pattern = 0; pattern < test_flash_attn_ext_nvfp4_vx_pv_patterns::n_patterns; ++pattern) {
         test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_pv_patterns(pattern));
+    }
+    for (int64_t row : { 0, 1, 2, 7, 8, 15, 16, 31, 32, 63 }) {
+        test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_pv_tile_probe(row));
     }
     test_cases.emplace_back(new test_flash_attn_ext_nvfp4_kx_set_rows());
 
