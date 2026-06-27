@@ -6972,6 +6972,79 @@ struct test_flash_attn_ext_nvfp4_vx_pv_tile_probe : public test_flash_attn_ext_n
     }
 };
 
+struct test_flash_attn_ext_nvfp4_vx_pv_row_code_probe : public test_flash_attn_ext_nvfp4_vx_pv_tile_probe {
+    static constexpr float row_code_min = -0.75f;
+    static constexpr float row_code_max =  0.75f;
+
+    test_flash_attn_ext_nvfp4_vx_pv_row_code_probe(int64_t probe_row) : test_flash_attn_ext_nvfp4_vx_pv_tile_probe(probe_row) {}
+
+    std::string vars() override {
+        return "h=" + std::to_string(h) + ",kv=" + std::to_string(kv) + ",row=" + std::to_string(probe_row);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "FLASH_ATTN_EXT_NVFP4_VX_PV_ROW_CODE_PROBE";
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_view_op(t->op)) {
+                continue;
+            }
+
+            if (strcmp(t->name, "q") == 0) {
+                std::vector<float> data(ggml_nelements(t), 0.0f);
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "k") == 0) {
+                init_quant_tensor(t, [](int64_t, int64_t) { return 0.0f; });
+            } else if (strcmp(t->name, "v") == 0) {
+                init_quant_tensor(t, [](int64_t row, int64_t col) {
+                    return row_code(row) + 0.0002f*(float) (col % 17);
+                });
+            } else if (strcmp(t->name, "m_pattern") == 0) {
+                init_probe_mask(t, probe_row);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+
+    double err(const float * a, const float * b, size_t n) override {
+        const double e = test_flash_attn_ext_nvfp4_vx_pv_tile_probe::err(a, b, n);
+        const int inferred_a = infer_row(a, n);
+        const int inferred_b = infer_row(b, n);
+        printf("row_code expected=%" PRId64 " inferred=%d/%d ", probe_row, inferred_a, inferred_b);
+        return e;
+    }
+
+    static float row_code(int64_t row) {
+        return row_code_min + (row_code_max - row_code_min) * (float) row / 63.0f;
+    }
+
+    static int infer_row(const float * x, size_t n) {
+        if (n == 0) {
+            return -1;
+        }
+
+        double sum = 0.0;
+        size_t count = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (std::isfinite(x[i])) {
+                sum += x[i];
+                ++count;
+            }
+        }
+        if (count == 0) {
+            return -1;
+        }
+
+        const double mean = sum / (double) count;
+        const double t = (mean - row_code_min) * 63.0 / (row_code_max - row_code_min);
+        return (int) llround(t);
+    }
+};
+
 struct test_flash_attn_ext_nvfp4_kx_set_rows : public test_flash_attn_ext_nvfp4_vx_set_rows {
     static constexpr int64_t anchor_row = 127;
 
@@ -9630,6 +9703,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     for (int64_t row : { 0, 1, 2, 7, 8, 15, 16, 31, 32, 63 }) {
         test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_pv_tile_probe(row));
+    }
+    for (int64_t row : { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 23, 24, 30, 31, 32, 33, 40, 47, 48, 55, 56, 62, 63 }) {
+        test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_pv_row_code_probe(row));
     }
     test_cases.emplace_back(new test_flash_attn_ext_nvfp4_kx_set_rows());
 
