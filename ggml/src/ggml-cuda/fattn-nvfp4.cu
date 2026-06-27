@@ -2079,13 +2079,14 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
                             0.0f;
                     }
 
-                    int qs_words[QK_NVFP4 / 8];
-                    uint32_t scale_word;
-                    ggml_cuda_fattn_nvfp4_quantize_64_words(vals, qs_words, scale_word);
+                    block_nvfp4 p_blk;
+                    quantize_f32_nvfp4_block(vals, &p_blk);
+                    const uint32_t * qs_words = reinterpret_cast<const uint32_t *>(p_blk.qs);
+                    const uint32_t scale_word = ggml_cuda_fattn_nvfp4_block_scale(p_blk);
 
 #pragma unroll
                     for (int word = 0; word < QK_NVFP4 / 8; ++word) {
-                        a_qs[row * tile_PV_A::J + word] = qs_words[word];
+                        a_qs[row * tile_PV_A::J + word] = (int) qs_words[word];
                     }
                     if (row == 0) {
 #pragma unroll
