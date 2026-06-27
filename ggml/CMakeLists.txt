@@ -214,6 +214,8 @@ set(GGML_CUDA_NVFP4_FA_SPLIT_KV_ROWS "128" CACHE STRING "ggml: KV rows per split
 set(GGML_CUDA_NVFP4_FA_DECOUPLED_WINDOW_SPLITS "16" CACHE STRING "ggml: split windows per launch for Blackwell native NVFP4 FlashAttention")
 option(GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW
                                             "ggml: prefer experimental Blackwell NVFP4 MTP4 path over the vector small-row path" OFF)
+option(GGML_CUDA_NVFP4_FA_P1_KQ8_TC_PV
+                                            "ggml: use experimental Blackwell NVFP4 p1 KQ8 plus tensor-core PV path" OFF)
 option(GGML_CUDA_NVFP4_FA_VEC_ALL_ROWS
                                             "ggml: allow experimental Blackwell NVFP4 vector FlashAttention for all supported Q rows" OFF)
 option(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT
