@@ -2315,11 +2315,12 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
     __shared__ int      kq_b_tile[tile_B::I * tile_B::J];
     __shared__ uint32_t kq_a_scale[tile_A::I];
     __shared__ uint32_t kq_b_scale[tile_B::I];
+    __shared__ float    smem_kq_score[GGML_CUDA_NVFP4_KX_KV_ROWS];
 
     const int lane = threadIdx.x & (WARP_SIZE - 1);
-    const int64_t col_block_count = (params.v_head_dim + WARP_SIZE - 1) / WARP_SIZE;
-    const int64_t q_head = (int64_t) blockIdx.x / col_block_count;
-    const int64_t col_base = ((int64_t) blockIdx.x - q_head * col_block_count) * WARP_SIZE;
+    const int col_warp = threadIdx.y;
+    const int64_t q_head = (int64_t) blockIdx.x;
+    const int64_t col_base = (int64_t) col_warp * WARP_SIZE;
     const int64_t col = col_base + lane;
     const int64_t seq = (int64_t) blockIdx.y;
     const int64_t kv_head = q_head / params.gqa_ratio;
@@ -2342,62 +2343,70 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
 
 #pragma unroll 1
     for (int64_t kv_tile = 0; kv_tile < kx_layout.kv_tile_count; ++kv_tile) {
-        float kq_score[GGML_CUDA_NVFP4_KX_KV_ROWS] = {};
+        if (col_warp == 0) {
+            float kq_score[GGML_CUDA_NVFP4_KX_KV_ROWS] = {};
 
 #pragma unroll 1
-        for (int q_frag = 0; q_frag < nfrag; ++q_frag) {
-            const block_nvfp4 q_blk = ggml_cuda_fattn_nvfp4_quantize_q_frag(q_ptr, q_frag);
-            const uint32_t * q_qs = reinterpret_cast<const uint32_t *>(q_blk.qs);
-            const uint32_t q_scale = ggml_cuda_fattn_nvfp4_block_scale(q_blk);
-            const ggml_cuda_nvfp4_kx_tile * kx_tile =
-                ggml_cuda_nvfp4_kx_tile_ptr(kx_layout, seq, kv_head, q_frag, kv_tile);
+            for (int q_frag = 0; q_frag < nfrag; ++q_frag) {
+                const block_nvfp4 q_blk = ggml_cuda_fattn_nvfp4_quantize_q_frag(q_ptr, q_frag);
+                const uint32_t * q_qs = reinterpret_cast<const uint32_t *>(q_blk.qs);
+                const uint32_t q_scale = ggml_cuda_fattn_nvfp4_block_scale(q_blk);
+                const ggml_cuda_nvfp4_kx_tile * kx_tile =
+                    ggml_cuda_nvfp4_kx_tile_ptr(kx_layout, seq, kv_head, q_frag, kv_tile);
 
-            for (int i = lane; i < tile_A::I * tile_A::J; i += WARP_SIZE) {
-                kq_a_tile[i] = 0;
-            }
-            for (int i = lane; i < tile_B::I * tile_B::J; i += WARP_SIZE) {
-                kq_b_tile[i] = kx_tile->qs[i];
-            }
-            for (int i = lane; i < tile_A::I; i += WARP_SIZE) {
-                kq_a_scale[i] = q_scale;
-            }
-            for (int i = lane; i < tile_B::I; i += WARP_SIZE) {
-                kq_b_scale[i] = kx_tile->scale[i];
-            }
-            if (lane < tile_A::J) {
-                kq_a_tile[lane] = (int) q_qs[lane];
-            }
-            __syncwarp();
+                for (int i = lane; i < tile_A::I * tile_A::J; i += WARP_SIZE) {
+                    kq_a_tile[i] = 0;
+                }
+                for (int i = lane; i < tile_B::I * tile_B::J; i += WARP_SIZE) {
+                    kq_b_tile[i] = kx_tile->qs[i];
+                }
+                for (int i = lane; i < tile_A::I; i += WARP_SIZE) {
+                    kq_a_scale[i] = q_scale;
+                }
+                for (int i = lane; i < tile_B::I; i += WARP_SIZE) {
+                    kq_b_scale[i] = kx_tile->scale[i];
+                }
+                if (lane < tile_A::J) {
+                    kq_a_tile[lane] = (int) q_qs[lane];
+                }
+                __syncwarp();
 
-            tile_A A;
-            tile_B B;
-            tile_C C = {};
-            ggml_cuda_mma::load_ldmatrix(A, kq_a_tile, tile_A::J);
-            ggml_cuda_mma::load_generic(B, kq_b_tile, tile_B::J);
+                tile_A A;
+                tile_B B;
+                tile_C C = {};
+                ggml_cuda_mma::load_ldmatrix(A, kq_a_tile, tile_A::J);
+                ggml_cuda_mma::load_generic(B, kq_b_tile, tile_B::J);
 
-            const int tidx_A = lane / 4 + (lane % 2) * 8;
-            const int tidx_B = lane / 4;
-            ggml_cuda_mma::mma_block_scaled_fp4<GGML_TYPE_NVFP4>(
-                C, A, B, kq_a_scale[tidx_A], kq_b_scale[tidx_B]);
+                const int tidx_A = lane / 4 + (lane % 2) * 8;
+                const int tidx_B = lane / 4;
+                ggml_cuda_mma::mma_block_scaled_fp4<GGML_TYPE_NVFP4>(
+                    C, A, B, kq_a_scale[tidx_A], kq_b_scale[tidx_B]);
 
 #pragma unroll
-            for (int row = 0; row < GGML_CUDA_NVFP4_KX_KV_ROWS; ++row) {
-                float local_score = 0.0f;
+                for (int row = 0; row < GGML_CUDA_NVFP4_KX_KV_ROWS; ++row) {
+                    float local_score = 0.0f;
 #pragma unroll
-                for (int l = 0; l < tile_C::ne; ++l) {
-                    if (tile_C::get_i(l) == 0 && tile_C::get_j(l) == row) {
-                        local_score += C.x[l];
+                    for (int l = 0; l < tile_C::ne; ++l) {
+                        if (tile_C::get_i(l) == 0 && tile_C::get_j(l) == row) {
+                            local_score += C.x[l];
+                        }
                     }
-                }
 
 #pragma unroll
-                for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-                    local_score += __shfl_down_sync(0xffffffff, local_score, offset);
+                    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+                        local_score += __shfl_down_sync(0xffffffff, local_score, offset);
+                    }
+                    kq_score[row] += __shfl_sync(0xffffffff, local_score, 0);
                 }
-                kq_score[row] += __shfl_sync(0xffffffff, local_score, 0);
+                __syncwarp();
             }
-            __syncwarp();
+
+#pragma unroll
+            for (int row = lane; row < GGML_CUDA_NVFP4_KX_KV_ROWS; row += WARP_SIZE) {
+                smem_kq_score[row] = kq_score[row];
+            }
         }
+        __syncthreads();
 
 #pragma unroll
         for (int row = 0; row < GGML_CUDA_NVFP4_KX_KV_ROWS; ++row) {
@@ -2407,7 +2416,7 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
             }
 
             const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, 0, kv_row, seq);
-            const float score = kq_score[row] * params.scale + mask;
+            const float score = smem_kq_score[row] * params.scale + mask;
             const float kq_max_new = fmaxf(kq_max, score);
             const float scale_old = rowsum == 0.0f ? 0.0f : expf(kq_max - kq_max_new);
             const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
@@ -2423,6 +2432,7 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
             rowsum = rowsum * scale_old + scale_new;
             kq_max = kq_max_new;
         }
+        __syncthreads();
     }
 
     if (col < params.v_head_dim) {
@@ -2763,8 +2773,8 @@ bool ggml_cuda_flash_attn_ext_nvfp4_p1_kx_mma(ggml_backend_cuda_context & ctx, g
 
     const fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, nullptr);
     const int64_t col_block_count = (params.v_head_dim + WARP_SIZE - 1) / WARP_SIZE;
-    const dim3 block(WARP_SIZE, 1, 1);
-    const dim3 grid((uint32_t) (params.ne_q_heads * col_block_count), (uint32_t) params.ne_seqs, 1);
+    const dim3 block(WARP_SIZE, (uint32_t) col_block_count, 1);
+    const dim3 grid((uint32_t) params.ne_q_heads, (uint32_t) params.ne_seqs, 1);
     fattn_nvfp4_p1_kx_mma_kernel<<<grid, block, 0, ctx.stream()>>>(params, kx_layout);
     CUDA_CHECK(cudaGetLastError());
     return true;
