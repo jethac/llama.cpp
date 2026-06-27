@@ -220,6 +220,41 @@ static __device__ __forceinline__ void ggml_cuda_nvfp4_vx_write_col(
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
 
+static __device__ __forceinline__ void ggml_cuda_nvfp4_vx_write_col_sub(
+        ggml_cuda_nvfp4_vx_tile * out,
+        const int col,
+        const int sub,
+        const float * vals) {
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    float amax = 0.0f;
+#pragma unroll
+    for (int j = 0; j < QK_NVFP4_SUB; ++j) {
+        amax = fmaxf(amax, fabsf(vals[j]));
+    }
+
+    const uint8_t scale_code = ggml_cuda_nvfp4_vx_best_scale_code(vals, amax);
+    const float scale = ggml_cuda_ue4m3_to_fp32(scale_code);
+    const float inv_scale = scale > 0.0f ? 0.5f / scale : 0.0f;
+
+    uint32_t q0 = 0;
+    uint32_t q1 = 0;
+#pragma unroll
+    for (int k = 0; k < QK_NVFP4_SUB / 4; ++k) {
+        q0 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k +  0], inv_scale) << (8 * k);
+        q0 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k +  8], inv_scale) << (8 * k + 4);
+        q1 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k +  4], inv_scale) << (8 * k);
+        q1 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k + 12], inv_scale) << (8 * k + 4);
+    }
+
+    const uint32_t scale_mask = 0xffu << (8 * sub);
+    out->scale[col] = (out->scale[col] & ~scale_mask) | ((uint32_t) scale_code << (8 * sub));
+    out->qs[col * GGML_CUDA_NVFP4_VX_WORDS_PER_COL + 2 * sub + 0] = (int32_t) q0;
+    out->qs[col * GGML_CUDA_NVFP4_VX_WORDS_PER_COL + 2 * sub + 1] = (int32_t) q1;
+#else
+    GGML_UNUSED_VARS(out, col, sub, vals);
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
+}
+
 static __device__ __forceinline__ uint32_t ggml_cuda_nvfp4_kx_scale_word(const block_nvfp4 & blk) {
     return (uint32_t) blk.d[0] | ((uint32_t) blk.d[1] << 8) | ((uint32_t) blk.d[2] << 16) | ((uint32_t) blk.d[3] << 24);
 }
@@ -370,11 +405,12 @@ static __global__ void ggml_cuda_nvfp4_kx_rebuild_kernel(
 template <typename idx_t>
 static __global__ void ggml_cuda_nvfp4_vx_update_dirty_tiles_f32_kernel(
         ggml_cuda_nvfp4_vx_layout layout,
-        const ggml_cuda_nvfp4_vx_tile * old_tiles,
+        const block_nvfp4 * V,
         const float * src0,
         const idx_t * row_ids,
         int64_t row_count,
         int64_t row_id_stride,
+        int64_t v_stride_row,
         int64_t src0_stride_row,
         int64_t logical_v_head_dim) {
 #if defined(BLACKWELL_MMA_AVAILABLE)
@@ -400,40 +436,56 @@ static __global__ void ggml_cuda_nvfp4_vx_update_dirty_tiles_f32_kernel(
     }
 
     ggml_cuda_nvfp4_vx_tile * out = ggml_cuda_nvfp4_vx_tile_ptr(layout, 0, kv_head, col_tile, kv_tile);
-    const ggml_cuda_nvfp4_vx_tile old = *out;
     const int64_t col_base = col_tile * GGML_CUDA_NVFP4_VX_COLS;
 
 #pragma unroll
-    for (int col = 0; col < GGML_CUDA_NVFP4_VX_COLS; ++col) {
-        float vals[QK_NVFP4];
-
-#pragma unroll
-        for (int k = 0; k < QK_NVFP4; ++k) {
-            const int64_t kv_row = kv_start + k;
-            const int64_t v_col = col_base + col;
-
-            float val = 0.0f;
-            if (kv_row < layout.kv_size && v_col < layout.v_head_dim) {
-                val = ggml_cuda_nvfp4_vx_dequant_tile_value(old, col, k);
-                for (int64_t row = 0; row < row_count; ++row) {
-                    const int64_t dst_row = (int64_t) row_ids[row * row_id_stride];
-                    if (dst_row == kv_row) {
-                        const int64_t logical_col = kv_head * logical_v_head_dim + v_col;
-                        val = src0[row * src0_stride_row + logical_col];
-                        break;
-                    }
-                }
+    for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
+        const int64_t sub_start = kv_start + sub * QK_NVFP4_SUB;
+        uint32_t dirty_mask = 0;
+        for (int64_t row = 0; row < row_count; ++row) {
+            const int64_t dst_row = (int64_t) row_ids[row * row_id_stride];
+            if (dst_row >= sub_start && dst_row < sub_start + QK_NVFP4_SUB) {
+                dirty_mask |= 1u << (dst_row - sub_start);
             }
-
-            vals[k] = val;
         }
 
-        ggml_cuda_nvfp4_vx_write_col(out, col, vals);
-    }
+        if (dirty_mask == 0) {
+            continue;
+        }
 
-    GGML_UNUSED(old_tiles);
+#pragma unroll
+        for (int col = 0; col < GGML_CUDA_NVFP4_VX_COLS; ++col) {
+            float vals[QK_NVFP4_SUB];
+
+#pragma unroll
+            for (int k = 0; k < QK_NVFP4_SUB; ++k) {
+                const int64_t kv_row = sub_start + k;
+                const int64_t v_col = col_base + col;
+                const int64_t logical_col = kv_head * logical_v_head_dim + v_col;
+
+                float val = 0.0f;
+                if (kv_row < layout.kv_size && v_col < layout.v_head_dim) {
+                    const block_nvfp4 * row = V + kv_row * v_stride_row;
+                    val = ggml_cuda_nvfp4_vx_dequant_row_value(row, (int) logical_col);
+                    if ((dirty_mask & (1u << k)) != 0) {
+                        for (int64_t src_row = 0; src_row < row_count; ++src_row) {
+                            const int64_t dst_row = (int64_t) row_ids[src_row * row_id_stride];
+                            if (dst_row == kv_row) {
+                                val = src0[src_row * src0_stride_row + logical_col];
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                vals[k] = val;
+            }
+
+            ggml_cuda_nvfp4_vx_write_col_sub(out, col, sub, vals);
+        }
+    }
 #else
-    GGML_UNUSED_VARS(layout, old_tiles, src0, row_ids, row_count, row_id_stride, src0_stride_row, logical_v_head_dim);
+    GGML_UNUSED_VARS(layout, V, src0, row_ids, row_count, row_id_stride, v_stride_row, src0_stride_row, logical_v_head_dim);
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
 
@@ -883,9 +935,10 @@ static bool ggml_cuda_nvfp4_kx_f32_set_rows_supported(
     return false;
 }
 
-static void ggml_cuda_nvfp4_vx_mark_direct_updates(
+static void ggml_cuda_nvfp4_vx_set_direct_updates(
         ggml_backend_cuda_context & ctx,
-        const ggml_tensor * V) {
+        const ggml_tensor * V,
+        bool direct_updates) {
     const void * key = ggml_cuda_nvfp4_vx_key(V);
     if (key == nullptr) {
         return;
@@ -902,7 +955,19 @@ static void ggml_cuda_nvfp4_vx_mark_direct_updates(
         return;
     }
 
-    entry_it->second.direct_updates = true;
+    entry_it->second.direct_updates = direct_updates;
+}
+
+static void ggml_cuda_nvfp4_vx_mark_direct_updates(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * V) {
+    ggml_cuda_nvfp4_vx_set_direct_updates(ctx, V, true);
+}
+
+static void ggml_cuda_nvfp4_vx_clear_direct_updates(
+        ggml_backend_cuda_context & ctx,
+        const ggml_tensor * V) {
+    ggml_cuda_nvfp4_vx_set_direct_updates(ctx, V, false);
 }
 
 static void ggml_cuda_nvfp4_kx_mark_direct_updates(
@@ -938,6 +1003,9 @@ bool ggml_cuda_nvfp4_vx_prepare(ggml_backend_cuda_context & ctx, const ggml_tens
     }
 
     const ggml_cuda_nvfp4_vx_layout layout = ggml_cuda_nvfp4_vx_get_or_create(ctx, V);
+    if (ggml_cuda_nvfp4_vx_has_direct_updates(ctx, V)) {
+        return true;
+    }
 
     const int64_t v_stride_row  = ggml_cuda_nvfp4_vx_stride_blocks(V, 1);
     const int64_t v_stride_head = ggml_cuda_nvfp4_vx_stride_blocks(V, 2);
@@ -1011,6 +1079,7 @@ static bool ggml_cuda_nvfp4_vx_after_set_rows_f32_t(
 
     const int64_t row_count = src0->ne[1];
     const int64_t row_id_stride = src1->nb[0] / sizeof(idx_t);
+    const int64_t v_stride_row = ggml_cuda_nvfp4_vx_stride_blocks(dst, 1);
     const int64_t src0_stride_row = src0->nb[1] / sizeof(float);
     const int64_t logical_v_head_dim = dst->ne[0] / layout.n_kv_heads;
 
@@ -1018,11 +1087,12 @@ static bool ggml_cuda_nvfp4_vx_after_set_rows_f32_t(
     const dim3 grid((uint32_t) (layout.n_kv_heads * layout.col_tile_count * layout.kv_tile_count), 1, 1);
     ggml_cuda_nvfp4_vx_update_dirty_tiles_f32_kernel<idx_t><<<grid, block, 0, ctx.stream()>>>(
         layout,
-        layout.tiles,
+        (const block_nvfp4 *) dst->data,
         (const float *) src0->data,
         (const idx_t *) src1->data,
         row_count,
         row_id_stride,
+        v_stride_row,
         src0_stride_row,
         logical_v_head_dim);
     CUDA_CHECK(cudaGetLastError());
@@ -1081,6 +1151,7 @@ static bool ggml_cuda_nvfp4_vx_after_set_rows_t(
         v_stride_row,
         logical_v_head_dim);
     CUDA_CHECK(cudaGetLastError());
+    ggml_cuda_nvfp4_vx_clear_direct_updates(ctx, dst);
     return true;
 }
 
@@ -1117,11 +1188,13 @@ bool ggml_cuda_nvfp4_vx_after_set_rows(ggml_backend_cuda_context & ctx, const gg
     }
 
     if (!ggml_cuda_nvfp4_vx_logical_set_rows_supported(dst, layout)) {
+        ggml_cuda_nvfp4_vx_clear_direct_updates(ctx, dst);
         return false;
     }
 
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     if (!blackwell_mma_available(cc)) {
+        ggml_cuda_nvfp4_vx_clear_direct_updates(ctx, dst);
         return false;
     }
 
