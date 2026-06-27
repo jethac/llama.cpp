@@ -30,6 +30,99 @@ static llm_graph_type ctx_type_to_graph_type(llama_context_type ctx_type) {
     throw std::runtime_error("Unsupported ctx type");
 }
 
+static bool llama_context_params_uses_nvfp4_kv(const llama_context_params & params) {
+    return params.type_k == GGML_TYPE_NVFP4 || params.type_v == GGML_TYPE_NVFP4;
+}
+
+static bool llama_backend_dev_is_cuda(ggml_backend_dev_t dev) {
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    return reg != nullptr && strcmp(ggml_backend_reg_name(reg), "CUDA") == 0;
+}
+
+static bool llama_cuda_dev_supports_nvfp4_fa(ggml_backend_dev_t dev) {
+    if (!llama_backend_dev_is_cuda(dev)) {
+        return false;
+    }
+
+    ggml_init_params ctx_params = {
+        /*.mem_size   =*/ 32*ggml_tensor_overhead(),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+
+    ggml_context * ctx = ggml_init(ctx_params);
+    if (ctx == nullptr) {
+        return false;
+    }
+
+    ggml_tensor * q    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32,   256,   1, 8, 1);
+    ggml_tensor * k    = ggml_new_tensor_4d(ctx, GGML_TYPE_NVFP4, 256, 256, 1, 1);
+    ggml_tensor * v    = ggml_new_tensor_4d(ctx, GGML_TYPE_NVFP4, 256, 256, 1, 1);
+    ggml_tensor * mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,   256,   1, 1, 1);
+    ggml_tensor * fa   = ggml_flash_attn_ext(ctx, q, k, v, mask, 1.0f, 0.0f, 0.0f);
+
+    const bool supported = ggml_backend_dev_supports_op(dev, fa);
+
+    ggml_free(ctx);
+
+    return supported;
+}
+
+static bool llama_model_validate_nvfp4_kv(const llama_model * model, const llama_context_params & params) {
+    if (!llama_context_params_uses_nvfp4_kv(params)) {
+        return true;
+    }
+
+    if (params.type_k != GGML_TYPE_NVFP4 || params.type_v != GGML_TYPE_NVFP4) {
+        LLAMA_LOG_ERROR("%s: NVFP4 KV cache requires both K and V cache types to be nvfp4\n", __func__);
+        return false;
+    }
+
+    if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
+        LLAMA_LOG_ERROR("%s: NVFP4 KV cache requires flash_attn\n", __func__);
+        return false;
+    }
+
+    if (!params.offload_kqv) {
+        LLAMA_LOG_ERROR("%s: NVFP4 KV cache requires KQV offload to a CUDA Blackwell device\n", __func__);
+        return false;
+    }
+
+    std::vector<ggml_backend_dev_t> checked;
+    checked.reserve(model->hparams.n_layer());
+
+    for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) {
+        ggml_backend_dev_t dev = model->dev_layer(il);
+        if (!llama_backend_dev_is_cuda(dev)) {
+            LLAMA_LOG_ERROR("%s: NVFP4 KV cache requires CUDA Blackwell native FP4 support, but layer %u is assigned to %s\n",
+                    __func__, il, ggml_backend_dev_name(dev));
+            return false;
+        }
+
+        bool already_checked = false;
+        for (ggml_backend_dev_t checked_dev : checked) {
+            if (checked_dev == dev) {
+                already_checked = true;
+                break;
+            }
+        }
+        if (already_checked) {
+            continue;
+        }
+
+        checked.push_back(dev);
+
+        if (!llama_cuda_dev_supports_nvfp4_fa(dev)) {
+            LLAMA_LOG_ERROR("%s: NVFP4 KV cache requires CUDA Blackwell native FP4 Flash Attention support, "
+                    "but device %s (%s) does not support the NVFP4 Flash Attention path\n",
+                    __func__, ggml_backend_dev_name(dev), ggml_backend_dev_description(dev));
+            return false;
+        }
+    }
+
+    return true;
+}
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -484,11 +577,15 @@ void llama_context::sched_reserve() {
 
         const size_t prefix_len = strlen(LLAMA_TENSOR_NAME_FATTN) + 1;
         bool fa_device_mismatch = false;
+        bool nvfp4_fa = false;
         for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
             ggml_tensor * n = ggml_graph_node(gf, i);
             if (n->op != GGML_OP_FLASH_ATTN_EXT) {
                 continue;
             }
+            nvfp4_fa = nvfp4_fa ||
+                n->src[1]->type == GGML_TYPE_NVFP4 ||
+                n->src[2]->type == GGML_TYPE_NVFP4;
             ggml_backend_dev_t device_fa = ggml_backend_get_device(ggml_backend_sched_get_tensor_backend(sched.get(), n));
 
             // TODO: instead of the tensor names, use a map to keep track of which (FA) tensors belong to which layer
@@ -505,12 +602,18 @@ void llama_context::sched_reserve() {
             }
         }
 
-        if (fa_device_mismatch) {
+        if (fa_device_mismatch && nvfp4_fa) {
+            throw std::runtime_error("NVFP4 KV cache requires CUDA Blackwell native FP4 Flash Attention support");
+        } else if (fa_device_mismatch) {
             cparams.flash_attn = false;
             LLAMA_LOG_WARN("%s: Flash Attention was auto, set to disabled\n", __func__);
         } else {
             cparams.flash_attn = true;
-            LLAMA_LOG_INFO("%s: Flash Attention was auto, set to enabled\n", __func__);
+            if (nvfp4_fa) {
+                LLAMA_LOG_INFO("%s: Flash Attention was auto, set to enabled for NVFP4 KV cache\n", __func__);
+            } else {
+                LLAMA_LOG_INFO("%s: Flash Attention was auto, set to enabled\n", __func__);
+            }
         }
 
         cparams.auto_fa = false;
@@ -3508,6 +3611,10 @@ llama_context * llama_init_from_model(
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && model->arch == LLM_ARCH_GROK) {
         LLAMA_LOG_WARN("%s: flash_attn is not compatible with Grok - forcing off\n", __func__);
         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
+
+    if (!llama_model_validate_nvfp4_kv(model, params)) {
+        return nullptr;
     }
 
     if (model->split_mode() == LLAMA_SPLIT_MODE_TENSOR) {

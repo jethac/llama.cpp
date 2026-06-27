@@ -121,8 +121,13 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-f16-f16.cu
             template-instances/fattn-vec-instance-q4_0-q4_0.cu
             template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            template-instances/fattn-vec-instance-bf16-bf16.cu
-            template-instances/fattn-vec-instance-nvfp4-nvfp4.cu)
+            template-instances/fattn-vec-instance-bf16-bf16.cu)
+        if (GGML_CUDA_NVFP4_FA)
+            list(APPEND GGML_SOURCES_CUDA template-instances/fattn-vec-instance-nvfp4-nvfp4.cu)
+        endif()
+    endif()
+    if (NOT GGML_CUDA_NVFP4_FA)
+        list(FILTER GGML_SOURCES_CUDA EXCLUDE REGEX "template-instances/fattn-vec-instance-nvfp4-nvfp4\\.cu$")
     endif()
 
     set(GGML_CUDA_FATTN_VEC_NTHREADS_VALUES 64 128 256 512)
@@ -181,6 +186,9 @@ if (CUDAToolkit_FOUND)
         set_source_files_properties(fattn-nvfp4.cu PROPERTIES COMPILE_DEFINITIONS "${GGML_CUDA_FATTN_NVFP4_DEFS}")
     endif()
     set(GGML_CUDA_FATTN_DEFS)
+    if (GGML_CUDA_NVFP4_FA)
+        list(APPEND GGML_CUDA_FATTN_DEFS GGML_CUDA_NVFP4_FA)
+    endif()
     if (GGML_CUDA_NVFP4_FA AND GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW)
         list(APPEND GGML_CUDA_FATTN_DEFS GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW)
     endif()

@@ -319,7 +319,7 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_exec_layouts(ctx, dst);
 #endif
 
-#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+#if defined(GGML_CUDA_NVFP4_FA) && defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
     if (ggml_cuda_flash_attn_ext_nvfp4_p1_kx_mma(ctx, dst)) {
         return;
@@ -386,20 +386,32 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_BF16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_BF16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
+#if defined(GGML_CUDA_NVFP4_FA)
+    FATTN_VEC_CASE(256, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+    FATTN_VEC_CASE(512, 512, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+    FATTN_VEC_CASE(512, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+#endif
 #else
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
+#if defined(GGML_CUDA_NVFP4_FA)
     FATTN_VEC_CASE(256, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
     FATTN_VEC_CASE(512, 512, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
     FATTN_VEC_CASE(512, 256, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4)
+#endif
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     GGML_ABORT("fatal error");
 }
 
 static bool ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(const int device, const ggml_tensor * dst) {
+#if !defined(GGML_CUDA_NVFP4_FA)
+    GGML_UNUSED(device);
+    GGML_UNUSED(dst);
+    return false;
+#else
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
 
     const ggml_tensor * KQV   = dst;
@@ -462,6 +474,7 @@ static bool ggml_cuda_flash_attn_ext_nvfp4_vec_smallrow_supported(const int devi
     memcpy(&max_bias,      (const float *) KQV->op_params + 1, sizeof(float));
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
     return max_bias == 0.0f && logit_softcap == 0.0f;
+#endif
 }
 
 // Best FlashAttention kernel for a specific GPU:

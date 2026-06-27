@@ -6663,6 +6663,156 @@ struct test_flash_attn_ext : public test_case {
     }
 };
 
+// GGML_OP_FLASH_ATTN_EXT + GGML_OP_SET_ROWS
+struct test_flash_attn_ext_nvfp4_vx_set_rows : public test_case {
+    static constexpr int64_t h  = 256;
+    static constexpr int64_t nh = 1;
+    static constexpr int64_t nr = 4;
+    static constexpr int64_t kv = 256;
+
+    const std::vector<int64_t> update_rows = { 0, 15, 16, 31, 63 };
+    const std::vector<int64_t> probe_rows  = { 0, 1, 15, 16, 17, 31, 32, 62, 63 };
+
+    std::string vars() override {
+        return "h=" + std::to_string(h) + ",kv=" + std::to_string(kv);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "FLASH_ATTN_EXT_NVFP4_VX_SET_ROWS";
+    }
+
+    bool run_whole_graph() override {
+        return true;
+    }
+
+    double max_nmse_err(ggml_backend_t backend) override {
+        if (backend_has_feature(backend, "BLACKWELL_NATIVE_FP4")) {
+            return 2e-3;
+        }
+        return 5e-4;
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * q_prepare = ggml_new_tensor_4d(ctx, GGML_TYPE_F32,   h, 1,  nh*nr, 1);
+        ggml_tensor * k         = ggml_new_tensor_4d(ctx, GGML_TYPE_NVFP4, h, kv, nh,    1);
+        ggml_tensor * v_cache   = ggml_new_tensor_4d(ctx, GGML_TYPE_NVFP4, h, kv, nh,    1);
+        ggml_tensor * v_src     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32,   h, (int64_t) update_rows.size());
+        ggml_tensor * row_idxs  = ggml_new_tensor_1d(ctx, GGML_TYPE_I64,      (int64_t) update_rows.size());
+        ggml_tensor * m_prepare = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,   kv, 1,  1,     1);
+
+        ggml_set_name(q_prepare, "q_prepare");
+        ggml_set_name(k,         "k");
+        ggml_set_name(v_cache,   "v_cache");
+        ggml_set_name(v_src,     "v_src");
+        ggml_set_name(row_idxs,  "row_idxs");
+        ggml_set_name(m_prepare, "m_prepare");
+
+        ggml_tensor * out_prepare = ggml_flash_attn_ext(ctx, q_prepare, k, v_cache, m_prepare, 1.0f/sqrtf((float) h), 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_prec(out_prepare, GGML_PREC_F32);
+        ggml_set_name(out_prepare, "out_prepare");
+
+        ggml_tensor * v_updated = ggml_set_rows(ctx, v_cache, v_src, row_idxs);
+        ggml_set_name(v_updated, "v_updated");
+
+        ggml_tensor * out = ggml_scale(ctx, out_prepare, 0.0f);
+        ggml_set_name(out, "out_zero_prepare");
+
+        for (int64_t i = 0; i < (int64_t) probe_rows.size(); ++i) {
+            ggml_tensor * q_probe = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, h, 1, nh*nr, 1);
+            ggml_tensor * m_probe = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv, 1, 1,     1);
+
+            ggml_format_name(q_probe, "q_probe_%" PRId64, i);
+            ggml_format_name(m_probe, "m_probe_%" PRId64, i);
+
+            ggml_tensor * out_probe = ggml_flash_attn_ext(ctx, q_probe, k, v_updated, m_probe, 1.0f/sqrtf((float) h), 0.0f, 0.0f);
+            ggml_flash_attn_ext_set_prec(out_probe, GGML_PREC_F32);
+            ggml_format_name(out_probe, "out_probe_%" PRId64, i);
+
+            out = ggml_add(ctx, out, out_probe);
+        }
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (ggml_is_view_op(t->op)) {
+                continue;
+            }
+
+            if (strcmp(t->name, "q_prepare") == 0 || strncmp(t->name, "q_probe_", 8) == 0) {
+                std::vector<float> data(ggml_nelements(t), 0.0f);
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "k") == 0) {
+                init_quant_tensor(t, [](int64_t, int64_t) { return 0.0f; });
+            } else if (strcmp(t->name, "v_cache") == 0) {
+                init_quant_tensor(t, [](int64_t row, int64_t col) {
+                    return 0.10f + 0.015f*(float) (row % 11) + 0.0005f*(float) (col % 23);
+                });
+            } else if (strcmp(t->name, "v_src") == 0) {
+                std::vector<float> data(ggml_nelements(t));
+                for (int64_t row = 0; row < t->ne[1]; ++row) {
+                    for (int64_t col = 0; col < t->ne[0]; ++col) {
+                        data[row*t->ne[0] + col] = updated_v_value(row, col);
+                    }
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "row_idxs") == 0) {
+                ggml_backend_tensor_set(t, update_rows.data(), 0, update_rows.size()*sizeof(int64_t));
+            } else if (strcmp(t->name, "m_prepare") == 0) {
+                init_select_mask(t, 0);
+            } else if (strncmp(t->name, "m_probe_", 8) == 0) {
+                const int64_t i = atoll(t->name + 8);
+                GGML_ASSERT(i >= 0 && i < (int64_t) probe_rows.size());
+                init_select_mask(t, probe_rows[i]);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+
+    float updated_v_value(int64_t update_idx, int64_t col) const {
+        return -0.70f + 0.23f*(float) update_idx + 0.0007f*(float) (col % 29);
+    }
+
+    template <typename F>
+    static void init_quant_tensor(ggml_tensor * t, F && value) {
+        GGML_ASSERT(t->type == GGML_TYPE_NVFP4);
+        GGML_ASSERT(t->ne[0] % ggml_blck_size(t->type) == 0);
+
+        std::vector<float> data(ggml_nelements(t));
+        for (int64_t i3 = 0; i3 < t->ne[3]; ++i3) {
+            for (int64_t i2 = 0; i2 < t->ne[2]; ++i2) {
+                for (int64_t row = 0; row < t->ne[1]; ++row) {
+                    for (int64_t col = 0; col < t->ne[0]; ++col) {
+                        const int64_t i = ((i3*t->ne[2] + i2)*t->ne[1] + row)*t->ne[0] + col;
+                        data[i] = value(row, col);
+                    }
+                }
+            }
+        }
+
+        std::vector<uint8_t> dataq(ggml_row_size(t->type, ggml_nelements(t)));
+        ggml_quantize_chunk(t->type, data.data(), dataq.data(), 0, ggml_nelements(t)/ggml_blck_size(t->type),
+                ggml_blck_size(t->type), nullptr);
+        ggml_backend_tensor_set(t, dataq.data(), 0, dataq.size());
+    }
+
+    void init_select_mask(ggml_tensor * t, int64_t row) const {
+        GGML_ASSERT(t->type == GGML_TYPE_F16);
+        GGML_ASSERT(t->ne[0] == kv);
+        GGML_ASSERT(t->ne[1] == 1);
+        GGML_ASSERT(row >= 0 && row < kv);
+
+        std::vector<float> data_f32(ggml_nelements(t), -INFINITY);
+        std::vector<ggml_fp16_t> data_f16(ggml_nelements(t));
+        data_f32[row] = 0.0f;
+        ggml_fp32_to_fp16_row(data_f32.data(), data_f16.data(), data_f32.size());
+        ggml_backend_tensor_set(t, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
+    }
+};
+
 // GGML_OP_CROSS_ENTROPY_LOSS
 struct test_cross_entropy_loss : public test_case {
     const ggml_type type;
@@ -9203,6 +9353,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {8, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
     test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 1, {4, 1}, 256, 8, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 2, 1, 3}, 128));
+    test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_set_rows());
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));
