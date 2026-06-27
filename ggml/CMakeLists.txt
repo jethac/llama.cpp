@@ -218,6 +218,8 @@ option(GGML_CUDA_NVFP4_FA_VEC_ALL_ROWS
                                             "ggml: allow experimental Blackwell NVFP4 vector FlashAttention for all supported Q rows" OFF)
 option(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT
                                             "ggml: use experimental Blackwell native FP4 PV with runtime V-tile requantization" OFF)
+option(GGML_CUDA_NVFP4_FA_NATIVE_PV_VX
+                                            "ggml: use experimental NVFP4 V execution layout as the native FP4 PV V operand" OFF)
 option(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT
                                             "ggml: enable experimental Blackwell NVFP4 KV execution-layout scaffolding" OFF)
 option(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE
