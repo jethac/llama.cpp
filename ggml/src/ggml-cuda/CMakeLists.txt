@@ -202,6 +202,9 @@ if (CUDAToolkit_FOUND)
     if (GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
         add_compile_definitions(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
     endif()
+    if (GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
+        add_compile_definitions(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
+    endif()
 
     ggml_add_backend_library(ggml-cuda
                              ${GGML_HEADERS_CUDA}

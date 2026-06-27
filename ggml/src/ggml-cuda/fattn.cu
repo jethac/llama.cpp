@@ -22,21 +22,38 @@ static bool ggml_cuda_flash_attn_ext_vec_stream_capturing(ggml_backend_cuda_cont
 #endif
 
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
-static void ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_vx(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+static void ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_exec_layouts(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
-    if (V == nullptr || V->type != GGML_TYPE_NVFP4) {
-        return;
+    if (K != nullptr && K->type == GGML_TYPE_NVFP4) {
+        (void) ggml_cuda_nvfp4_kx_prepare(ctx, K);
     }
 
-    (void) ggml_cuda_nvfp4_vx_prepare(ctx, V);
+    if (V != nullptr && V->type == GGML_TYPE_NVFP4) {
+        (void) ggml_cuda_nvfp4_vx_prepare(ctx, V);
+    }
 
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
     if (!ggml_cuda_flash_attn_ext_vec_stream_capturing(ctx)) {
-        float vx_max_abs_error = 0.0f;
-        float vx_mean_abs_error = 0.0f;
-        (void) ggml_cuda_nvfp4_vx_validate(ctx, V, &vx_max_abs_error, &vx_mean_abs_error);
-        GGML_ASSERT(std::isfinite(vx_max_abs_error));
-        GGML_ASSERT(std::isfinite(vx_mean_abs_error));
+        if (K != nullptr && K->type == GGML_TYPE_NVFP4) {
+            float kx_max_abs_error = 0.0f;
+            float kx_mean_abs_error = 0.0f;
+            const bool kx_valid = ggml_cuda_nvfp4_kx_validate(ctx, K, &kx_max_abs_error, &kx_mean_abs_error);
+            GGML_ASSERT(kx_valid);
+            GGML_ASSERT(std::isfinite(kx_max_abs_error));
+            GGML_ASSERT(std::isfinite(kx_mean_abs_error));
+            GGML_ASSERT(kx_max_abs_error <= 1.0e-6f);
+            GGML_ASSERT(kx_mean_abs_error <= 1.0e-6f);
+        }
+
+        if (V != nullptr && V->type == GGML_TYPE_NVFP4) {
+            float vx_max_abs_error = 0.0f;
+            float vx_mean_abs_error = 0.0f;
+            const bool vx_valid = ggml_cuda_nvfp4_vx_validate(ctx, V, &vx_max_abs_error, &vx_mean_abs_error);
+            GGML_ASSERT(vx_valid);
+            GGML_ASSERT(std::isfinite(vx_max_abs_error));
+            GGML_ASSERT(std::isfinite(vx_mean_abs_error));
+        }
     }
 #endif
 }
@@ -298,14 +315,19 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     ggml_tensor * K = dst->src[1];
     ggml_tensor * V = dst->src[2];
 
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_exec_layouts(ctx, dst);
+#endif
+
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
-    if (ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar(ctx, dst)) {
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ)
+    if (ggml_cuda_flash_attn_ext_nvfp4_p1_kx_mma(ctx, dst)) {
         return;
     }
 #endif
-
-#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
-    ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_vx(ctx, dst);
+    if (ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar(ctx, dst)) {
+        return;
+    }
 #endif
 
 #ifdef GGML_CUDA_FA_ALL_QUANTS
@@ -571,6 +593,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
+            break;
         default:
             return BEST_FATTN_KERNEL_NONE;
     }

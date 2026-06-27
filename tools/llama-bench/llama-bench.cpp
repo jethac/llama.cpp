@@ -214,6 +214,48 @@ static std::string devices_to_string(const std::vector<ggml_backend_dev_t> & dev
     return join(names, "/");
 }
 
+static bool backend_reg_has_feature(ggml_backend_reg_t reg, const char * feature_name, const char * feature_value) {
+    auto * get_features = (ggml_backend_get_features_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_get_features");
+    if (!get_features) {
+        return false;
+    }
+
+    const ggml_backend_feature * features = get_features(reg);
+    if (!features) {
+        return false;
+    }
+
+    for (const ggml_backend_feature * f = features; f->name; ++f) {
+        if (strcmp(f->name, feature_name) == 0 && strcmp(f->value, feature_value) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool backend_dev_has_blackwell_native_fp4(ggml_backend_dev_t dev) {
+    if (dev == nullptr || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+        return false;
+    }
+
+    return backend_reg_has_feature(ggml_backend_dev_backend_reg(dev), "BLACKWELL_NATIVE_FP4", "1");
+}
+
+static bool any_auto_device_has_blackwell_native_fp4() {
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        if (backend_dev_has_blackwell_native_fp4(ggml_backend_dev_get(i))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool contains_nvfp4(const std::vector<ggml_type> & types) {
+    return std::find(types.begin(), types.end(), GGML_TYPE_NVFP4) != types.end();
+}
+
 // command line params
 enum output_formats { NONE, CSV, JSON, JSONL, MARKDOWN, SQL };
 
@@ -408,6 +450,40 @@ static const cmd_params cmd_params_defaults = {
     /* output_format_stderr */ NONE,
 };
 
+static bool validate_nvfp4_kv_support(const cmd_params & params) {
+    if (!contains_nvfp4(params.type_k) && !contains_nvfp4(params.type_v)) {
+        return true;
+    }
+
+    for (const auto & devices : params.devices) {
+        bool supported = false;
+
+        if (devices.empty()) {
+            supported = any_auto_device_has_blackwell_native_fp4();
+        } else {
+            for (auto * dev : devices) {
+                if (backend_dev_has_blackwell_native_fp4(dev)) {
+                    supported = true;
+                    break;
+                }
+            }
+        }
+
+        if (!supported) {
+            fprintf(stderr,
+                "%s: error: nvfp4 KV cache requires a CUDA Blackwell backend advertising BLACKWELL_NATIVE_FP4=1 "
+                "(cache-type-k=%s, cache-type-v=%s, devices=%s)\n",
+                __func__,
+                join(transform_to_str(params.type_k, ggml_type_name), ",").c_str(),
+                join(transform_to_str(params.type_v, ggml_type_name), ",").c_str(),
+                devices_to_string(devices).c_str());
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static void print_usage(int /* argc */, char ** argv) {
     printf("usage: %s [options]\n", argv[0]);
     printf("\n");
@@ -447,8 +523,8 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  -d, --n-depth <n>                           (default: %s)\n", join(cmd_params_defaults.n_depth, ",").c_str());
     printf("  -b, --batch-size <n>                        (default: %s)\n", join(cmd_params_defaults.n_batch, ",").c_str());
     printf("  -ub, --ubatch-size <n>                      (default: %s)\n", join(cmd_params_defaults.n_ubatch, ",").c_str());
-    printf("  -ctk, --cache-type-k <t>                    (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_k, ggml_type_name), ",").c_str());
-    printf("  -ctv, --cache-type-v <t>                    (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_v, ggml_type_name), ",").c_str());
+    printf("  -ctk, --cache-type-k <t>                    (default: %s; nvfp4 requires CUDA Blackwell native FP4)\n", join(transform_to_str(cmd_params_defaults.type_k, ggml_type_name), ",").c_str());
+    printf("  -ctv, --cache-type-v <t>                    (default: %s; nvfp4 requires CUDA Blackwell native FP4)\n", join(transform_to_str(cmd_params_defaults.type_v, ggml_type_name), ",").c_str());
     printf("  -t, --threads <n>                           (default: %s)\n", join(cmd_params_defaults.n_threads, ",").c_str());
     printf("  -C, --cpu-mask <hex,hex>                    (default: %s)\n", join(cmd_params_defaults.cpu_mask, ",").c_str());
     printf("  --cpu-strict <0|1>                          (default: %s)\n", join(cmd_params_defaults.cpu_strict, ",").c_str());
@@ -2190,6 +2266,9 @@ int llama_bench(int argc, char ** argv) {
     ggml_backend_load_all();
 
     cmd_params params = parse_cmd_params(argc, argv);
+    if (!validate_nvfp4_kv_support(params)) {
+        return 1;
+    }
 
     auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (!cpu_dev) {

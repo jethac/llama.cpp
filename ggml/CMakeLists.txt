@@ -226,6 +226,8 @@ option(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE
                                             "ggml: validate experimental Blackwell NVFP4 KV execution-layout roundtrip" OFF)
 option(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR
                                             "ggml: use experimental scalar p1 NVFP4 attention consumer over the V execution layout" OFF)
+option(GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ
+                                            "ggml: use experimental native FP4 p1 KQ consumer over K/V execution layouts" OFF)
 option(GGML_CUDA_NVFP4_FAST_KV_QUANT        "ggml: use experimental faster CUDA NVFP4 KV write quantizer" OFF)
 if ((GGML_CUDA_NVFP4_FA_PREFER_MTP4_SMALLROW OR
      GGML_CUDA_NVFP4_FA_VEC_ALL_ROWS OR
@@ -239,8 +241,11 @@ endif()
 if (GGML_CUDA_NVFP4_FA_NATIVE_PV_VX AND NOT GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
     message(FATAL_ERROR "GGML_CUDA_NVFP4_FA_NATIVE_PV_VX requires GGML_CUDA_NVFP4_KV_EXEC_LAYOUT=ON")
 endif()
-if ((GGML_CUDA_NVFP4_KV_EXEC_VALIDATE OR GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR) AND NOT GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+if ((GGML_CUDA_NVFP4_KV_EXEC_VALIDATE OR GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR OR GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ) AND NOT GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
     message(FATAL_ERROR "NVFP4 KV execution-layout diagnostics require GGML_CUDA_NVFP4_KV_EXEC_LAYOUT=ON")
+endif()
+if (GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ AND NOT GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+    message(FATAL_ERROR "GGML_CUDA_NVFP4_KV_EXEC_P1_NATIVE_KQ requires GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR=ON")
 endif()
 set(GGML_CUDA_FATTN_VEC_NTHREADS "128" CACHE STRING "ggml: CUDA FlashAttention vector kernel threads per block")
 set_property(CACHE GGML_CUDA_FATTN_VEC_NTHREADS PROPERTY STRINGS "64;128;256;512")

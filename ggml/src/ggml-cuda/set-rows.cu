@@ -364,6 +364,7 @@ void ggml_cuda_op_set_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
     if (dst->type == GGML_TYPE_NVFP4) {
         (void) ggml_cuda_nvfp4_vx_after_set_rows(ctx, dst);
+        (void) ggml_cuda_nvfp4_kx_after_set_rows(ctx, dst);
     }
 #endif
 }

@@ -327,6 +327,10 @@ static std::string get_all_kv_cache_types() {
     return msg.str();
 }
 
+static const char * kv_cache_type_notes() {
+    return "note: nvfp4 requires CUDA Blackwell native FP4 support";
+}
+
 static bool parse_bool_value(const std::string & value) {
     if (is_truthy(value)) {
         return true;
@@ -2137,8 +2141,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format(
             "KV cache data type for K\n"
             "allowed values: %s\n"
+            "%s\n"
             "(default: %s)",
             get_all_kv_cache_types().c_str(),
+            kv_cache_type_notes(),
             ggml_type_name(params.cache_type_k)
         ),
         [](common_params & params, const std::string & value) {
@@ -2150,8 +2156,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format(
             "KV cache data type for V\n"
             "allowed values: %s\n"
+            "%s\n"
             "(default: %s)",
             get_all_kv_cache_types().c_str(),
+            kv_cache_type_notes(),
             ggml_type_name(params.cache_type_v)
         ),
         [](common_params & params, const std::string & value) {
@@ -3592,8 +3600,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format(
             "KV cache data type for K for the draft model\n"
             "allowed values: %s\n"
+            "%s\n"
             "(default: %s)",
             get_all_kv_cache_types().c_str(),
+            kv_cache_type_notes(),
             ggml_type_name(params.speculative.draft.cache_type_k)
         ),
         [](common_params & params, const std::string & value) {
@@ -3605,8 +3615,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format(
             "KV cache data type for V for the draft model\n"
             "allowed values: %s\n"
+            "%s\n"
             "(default: %s)",
             get_all_kv_cache_types().c_str(),
+            kv_cache_type_notes(),
             ggml_type_name(params.speculative.draft.cache_type_v)
         ),
         [](common_params & params, const std::string & value) {

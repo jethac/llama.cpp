@@ -314,6 +314,14 @@ static ggml_cuda_device_info ggml_cuda_init() {
             CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
         }
 
+        if (info.devices[id].cc >= GGML_CUDA_CC_BLACKWELL && info.devices[id].cc < GGML_CUDA_CC_RUBIN &&
+            !blackwell_mma_available(info.devices[id].cc)) {
+            GGML_LOG_WARN(
+                "  Device %d: %s is Blackwell, but this build does not include Blackwell native FP4 kernels; "
+                "NVFP4 KV cache is disabled on this device.\n",
+                id, prop.name);
+        }
+
 #endif  // defined(GGML_USE_HIP)
     }
 
@@ -612,7 +620,7 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
-    ggml_cuda_nvfp4_vx_clear_context(*this);
+    ggml_cuda_nvfp4_kv_exec_clear_context(*this);
 #endif
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
@@ -5224,10 +5232,14 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SET_ROWS:
             {
                 const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
+                if (op->type == GGML_TYPE_NVFP4 && !blackwell_mma_available(cc)) {
+                    GGML_LOG_WARN_ONCE("NVFP4 KV cache requires CUDA Blackwell native FP4 support; CUDA SET_ROWS for NVFP4 is disabled on this device.\n");
+                    return false;
+                }
                 return (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16 ||
                        op->type == GGML_TYPE_Q4_0 || op->type == GGML_TYPE_Q4_1 || op->type == GGML_TYPE_Q5_0 ||
                        op->type == GGML_TYPE_Q5_1 || op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_IQ4_NL ||
-                       (op->type == GGML_TYPE_NVFP4 && blackwell_mma_available(cc))) &&
+                       op->type == GGML_TYPE_NVFP4) &&
                        op->src[0]->type == GGML_TYPE_F32 &&
                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type == GGML_TYPE_I32);
             } break;
@@ -5605,13 +5617,15 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     #endif
 
     {
+        bool has_blackwell_native_fp4 = false;
         const auto & info = ggml_cuda_info();
         for (int id = 0; id < info.device_count; ++id) {
             if (blackwell_mma_available(info.devices[id].cc)) {
-                features.push_back({ "BLACKWELL_NATIVE_FP4", "1"});
+                has_blackwell_native_fp4 = true;
                 break;
             }
         }
+        features.push_back({ "BLACKWELL_NATIVE_FP4", has_blackwell_native_fp4 ? "1" : "0" });
     }
 
     #undef _STRINGIFY
