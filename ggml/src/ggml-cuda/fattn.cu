@@ -7,6 +7,7 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+#include <cstdio>
 #include <cstdlib>
 
 #if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
@@ -540,6 +541,18 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_NVFP4_MTP4 = 500,
 };
 
+static const char * ggml_cuda_fattn_kernel_name(best_fattn_kernel kernel) {
+    switch (kernel) {
+        case BEST_FATTN_KERNEL_NONE:       return "none";
+        case BEST_FATTN_KERNEL_TILE:       return "tile";
+        case BEST_FATTN_KERNEL_VEC:        return "vec";
+        case BEST_FATTN_KERNEL_WMMA_F16:   return "wmma-f16";
+        case BEST_FATTN_KERNEL_MMA_F16:    return "mma-f16";
+        case BEST_FATTN_KERNEL_NVFP4_MTP4: return "nvfp4-mtp4";
+    }
+    return "unknown";
+}
+
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
 #ifndef FLASH_ATTN_AVAILABLE
     GGML_UNUSED(device); GGML_UNUSED(dst);
@@ -803,7 +816,22 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
-    switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
+    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst);
+    if (ggml_cuda_nvfp4_fattn_trace_enabled()) {
+        const ggml_tensor * Q = dst->src[0];
+        const ggml_tensor * K = dst->src[1];
+        const ggml_tensor * V = dst->src[2];
+        if (Q != nullptr && K != nullptr && V != nullptr) {
+            std::fprintf(stderr,
+                "ggml_cuda_fattn_kernel_trace: kernel=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld\n",
+                ggml_cuda_fattn_kernel_name(kernel), ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
+                (long long) Q->ne[0], (long long) V->ne[0], (long long) Q->ne[1], (long long) K->ne[1],
+                (long long) Q->ne[2], (long long) K->ne[2]);
+            std::fflush(stderr);
+        }
+    }
+
+    switch (kernel) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
         case BEST_FATTN_KERNEL_TILE:
