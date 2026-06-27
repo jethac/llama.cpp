@@ -2087,7 +2087,12 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
                     for (int word = 0; word < QK_NVFP4 / 8; ++word) {
                         a_qs[row * tile_PV_A::J + word] = qs_words[word];
                     }
-                    a_scale[row] = scale_word;
+                    if (row == 0) {
+#pragma unroll
+                        for (int scale_i = 0; scale_i < tile_PV_A::I; ++scale_i) {
+                            a_scale[scale_i] = scale_word;
+                        }
+                    }
                 }
             }
 
@@ -2104,7 +2109,12 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
                 A.x[l] = a_qs[row * tile_PV_A::J + col];
             }
 
-            ggml_cuda_mma::load_generic(B, b_qs, tile_PV_B::J);
+#pragma unroll
+            for (int l = 0; l < tile_PV_B::ne; ++l) {
+                const int row = ggml_cuda_fattn_nvfp4_native_pv_b_i(l, lane);
+                const int col = ggml_cuda_fattn_nvfp4_native_pv_b_j(l, lane);
+                B.x[l] = b_qs[row * tile_PV_B::J + col];
+            }
 
             const int tidx_A = lane / 4 + (lane % 2) * 8;
             const int tidx_B = lane / 4;
