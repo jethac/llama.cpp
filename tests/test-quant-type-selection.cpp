@@ -424,6 +424,22 @@ static bool run_test_section(quantize_state_impl * qs, mock_tensors & mt, const 
     return all_pass;
 }
 
+static bool run_static_policy_tests() {
+    bool pass = true;
+
+    if (llama_ftype_get_default_type(LLAMA_FTYPE_MOSTLY_NVFP4) != GGML_TYPE_COUNT) {
+        printf("FAIL  NVFP4 ftype must not be a default llama-quantize output target\n");
+        pass = false;
+    }
+
+    if (llama_ftype_to_name(LLAMA_FTYPE_MOSTLY_NVFP4) == nullptr) {
+        printf("FAIL  NVFP4 ftype name should remain available for imported-file reporting\n");
+        pass = false;
+    }
+
+    return pass;
+}
+
 static int run_remote_tests(const std::string & snapshot_dir, const char * argv0) {
     int total_pass = 0;
     int total_fail = 0;
@@ -515,6 +531,10 @@ int main(int argc, char ** argv) {
 
     // suppress llama log warnings during test (e.g. tensor type fallback messages)
     llama_log_set([](enum ggml_log_level, const char *, void *) {}, nullptr);
+
+    if (!run_static_policy_tests()) {
+        return 1;
+    }
 
     return run_remote_tests(snapshot_dir, argv[0]);
 }

@@ -802,6 +802,9 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q1_0: return GGML_TYPE_Q1_0;
 
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return GGML_TYPE_MXFP4;
+        // NVFP4 is intentionally not a general model-quantization target here.
+        // The current shipping surface uses GGML_TYPE_NVFP4 for imported tensors
+        // and Blackwell runtime KV cache, not llama-quantize output files.
 
         // K-quants
         case LLAMA_FTYPE_MOSTLY_Q2_K_S:
@@ -865,6 +868,9 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
     ggml_type default_type = llama_ftype_get_default_type(ftype);
     if (default_type == GGML_TYPE_COUNT) {
+        if (ftype == LLAMA_FTYPE_MOSTLY_NVFP4) {
+            throw std::runtime_error("NVFP4 model quantization is not supported; use NVFP4 only for imported tensors or Blackwell KV cache");
+        }
         throw std::runtime_error(format("invalid output file type %d\n", ftype));
     }
 
