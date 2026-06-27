@@ -46,6 +46,14 @@ static void ggml_cuda_nvfp4_fattn_trace(
     const bool kx_direct = K->type == GGML_TYPE_NVFP4 && ggml_cuda_nvfp4_kx_has_direct_updates(ctx, K);
     const bool vx_direct = V->type == GGML_TYPE_NVFP4 && ggml_cuda_nvfp4_vx_has_direct_updates(ctx, V);
 
+    std::fprintf(
+        stderr,
+        "ggml_cuda_nvfp4_fattn_dispatch_trace: dispatch=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld kx_layout=%d vx_layout=%d kx_direct=%d vx_direct=%d\n",
+        marker, ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
+        (long long) Q->ne[0], (long long) V->ne[0], (long long) Q->ne[1], (long long) K->ne[1],
+        (long long) Q->ne[2], (long long) K->ne[2],
+        kx_found ? 1 : 0, vx_found ? 1 : 0, kx_direct ? 1 : 0, vx_direct ? 1 : 0);
+
     GGML_LOG_INFO(
         "%s: nvfp4_fattn_dispatch=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld kx_layout=%d vx_layout=%d kx_direct=%d vx_direct=%d\n",
         __func__, marker, ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
@@ -53,6 +61,13 @@ static void ggml_cuda_nvfp4_fattn_trace(
         (long long) Q->ne[2], (long long) K->ne[2],
         kx_found ? 1 : 0, vx_found ? 1 : 0, kx_direct ? 1 : 0, vx_direct ? 1 : 0);
 #else
+    std::fprintf(
+        stderr,
+        "ggml_cuda_nvfp4_fattn_dispatch_trace: dispatch=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld\n",
+        marker, ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
+        (long long) Q->ne[0], (long long) V->ne[0], (long long) Q->ne[1], (long long) K->ne[1],
+        (long long) Q->ne[2], (long long) K->ne[2]);
+
     GGML_LOG_INFO(
         "%s: nvfp4_fattn_dispatch=%s q=%s k=%s v=%s dkq=%lld dv=%lld q_rows=%lld kv_rows=%lld q_heads=%lld kv_heads=%lld\n",
         __func__, marker, ggml_type_name(Q->type), ggml_type_name(K->type), ggml_type_name(V->type),
