@@ -6816,6 +6816,14 @@ struct test_flash_attn_ext_nvfp4_vx_set_rows : public test_case {
 struct test_flash_attn_ext_nvfp4_vx_pv_patterns : public test_flash_attn_ext_nvfp4_vx_set_rows {
     static constexpr int64_t n_patterns = 5;
 
+    int64_t pattern;
+
+    test_flash_attn_ext_nvfp4_vx_pv_patterns(int64_t pattern = 0) : pattern(pattern) {}
+
+    std::string vars() override {
+        return "h=" + std::to_string(h) + ",kv=" + std::to_string(kv) + ",pattern=" + std::to_string(pattern);
+    }
+
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
         return "FLASH_ATTN_EXT_NVFP4_VX_PV_PATTERNS";
@@ -6830,18 +6838,11 @@ struct test_flash_attn_ext_nvfp4_vx_pv_patterns : public test_flash_attn_ext_nvf
         ggml_set_name(k, "k");
         ggml_set_name(v, "v");
 
-        ggml_tensor * out = nullptr;
-        for (int64_t i = 0; i < n_patterns; ++i) {
-            ggml_tensor * m = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv, 1, 1, 1);
-            ggml_format_name(m, "m_pattern_%" PRId64, i);
+        ggml_tensor * m = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv, 1, 1, 1);
+        ggml_set_name(m, "m_pattern");
 
-            ggml_tensor * out_pattern = ggml_flash_attn_ext(ctx, q, k, v, m, 1.0f/sqrtf((float) h), 0.0f, 0.0f);
-            ggml_flash_attn_ext_set_prec(out_pattern, GGML_PREC_F32);
-            ggml_format_name(out_pattern, "out_pattern_%" PRId64, i);
-
-            out = out == nullptr ? out_pattern : ggml_add(ctx, out, out_pattern);
-        }
-
+        ggml_tensor * out = ggml_flash_attn_ext(ctx, q, k, v, m, 1.0f/sqrtf((float) h), 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
         ggml_set_name(out, "out");
         return out;
     }
@@ -6861,8 +6862,7 @@ struct test_flash_attn_ext_nvfp4_vx_pv_patterns : public test_flash_attn_ext_nvf
                 init_quant_tensor(t, [](int64_t row, int64_t col) {
                     return -0.45f + 0.0030f*(float) row + 0.0017f*(float) (col % 37);
                 });
-            } else if (strncmp(t->name, "m_pattern_", 10) == 0) {
-                const int64_t pattern = atoll(t->name + 10);
+            } else if (strcmp(t->name, "m_pattern") == 0) {
                 init_pattern_mask(t, pattern);
             } else {
                 init_tensor_uniform(t);
@@ -9562,7 +9562,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(512, 256, 4, {8, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 1, 2, 3}, 128));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 1, {4, 1}, 256, 8, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_NVFP4, GGML_TYPE_NVFP4, {0, 2, 1, 3}, 128));
     test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_set_rows());
-    test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_pv_patterns());
+    for (int64_t pattern = 0; pattern < test_flash_attn_ext_nvfp4_vx_pv_patterns::n_patterns; ++pattern) {
+        test_cases.emplace_back(new test_flash_attn_ext_nvfp4_vx_pv_patterns(pattern));
+    }
     test_cases.emplace_back(new test_flash_attn_ext_nvfp4_kx_set_rows());
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
