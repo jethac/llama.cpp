@@ -2316,10 +2316,6 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
     __shared__ uint32_t kq_a_scale[tile_A::I];
     __shared__ uint32_t kq_b_scale[tile_B::I];
     __shared__ float    smem_kq_score[GGML_CUDA_NVFP4_KX_KV_ROWS];
-    __shared__ float    smem_scale_old[GGML_CUDA_NVFP4_KX_KV_ROWS];
-    __shared__ float    smem_scale_new[GGML_CUDA_NVFP4_KX_KV_ROWS];
-    __shared__ float    smem_kq_max;
-    __shared__ float    smem_rowsum;
 
     const int lane = threadIdx.x & (WARP_SIZE - 1);
     const int col_warp = threadIdx.y;
@@ -2341,13 +2337,9 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
         q_head * params.dst_stride_head +
         seq    * params.dst_stride_seq;
 
+    float kq_max = -3.402823466e+38F;
+    float rowsum = 0.0f;
     float pv = 0.0f;
-
-    if (threadIdx.x == 0 && threadIdx.y == 0) {
-        smem_kq_max = -3.402823466e+38F;
-        smem_rowsum = 0.0f;
-    }
-    __syncthreads();
 
 #pragma unroll 1
     for (int64_t kv_tile = 0; kv_tile < kx_layout.kv_tile_count; ++kv_tile) {
@@ -2416,30 +2408,6 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
         }
         __syncthreads();
 
-        if (threadIdx.x == 0 && threadIdx.y == 0) {
-#pragma unroll
-            for (int row = 0; row < GGML_CUDA_NVFP4_KX_KV_ROWS; ++row) {
-                const int64_t kv_row = kv_tile * GGML_CUDA_NVFP4_KX_KV_ROWS + row;
-                if (kv_row >= params.ne_kv_rows) {
-                    smem_scale_old[row] = 1.0f;
-                    smem_scale_new[row] = 0.0f;
-                    continue;
-                }
-
-                const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, 0, kv_row, seq);
-                const float score = smem_kq_score[row] * params.scale + mask;
-                const float kq_max_new = fmaxf(smem_kq_max, score);
-                const float scale_old = smem_rowsum == 0.0f ? 0.0f : expf(smem_kq_max - kq_max_new);
-                const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
-
-                smem_rowsum = smem_rowsum * scale_old + scale_new;
-                smem_kq_max = kq_max_new;
-                smem_scale_old[row] = scale_old;
-                smem_scale_new[row] = scale_new;
-            }
-        }
-        __syncthreads();
-
 #pragma unroll
         for (int row = 0; row < GGML_CUDA_NVFP4_KX_KV_ROWS; ++row) {
             const int64_t kv_row = kv_tile * GGML_CUDA_NVFP4_KX_KV_ROWS + row;
@@ -2447,20 +2415,28 @@ __global__ void fattn_nvfp4_p1_kx_mma_kernel(
                 continue;
             }
 
+            const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, 0, kv_row, seq);
+            const float score = smem_kq_score[row] * params.scale + mask;
+            const float kq_max_new = fmaxf(kq_max, score);
+            const float scale_old = rowsum == 0.0f ? 0.0f : expf(kq_max - kq_max_new);
+            const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
+
             if (col < params.v_head_dim) {
                 const block_nvfp4 * v_ptr = params.V +
                     kv_head * params.v_stride_head +
                     seq     * params.v_stride_seq +
                     kv_row  * params.v_stride_row;
                 const float v = ggml_cuda_fattn_nvfp4_dequant_row_value(v_ptr, col);
-                pv = pv * smem_scale_old[row] + smem_scale_new[row] * v;
+                pv = pv * scale_old + scale_new * v;
             }
+            rowsum = rowsum * scale_old + scale_new;
+            kq_max = kq_max_new;
         }
         __syncthreads();
     }
 
     if (col < params.v_head_dim) {
-        dst_ptr[col] = smem_rowsum == 0.0f ? 0.0f : pv / smem_rowsum;
+        dst_ptr[col] = rowsum == 0.0f ? 0.0f : pv / rowsum;
     }
 #else
     GGML_UNUSED_VARS(params, kx_layout);
