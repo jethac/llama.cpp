@@ -502,6 +502,46 @@ static __device__ __forceinline__ int ggml_cuda_fattn_nvfp4_pv_c_j(const int l, 
 #endif // GGML_CUDA_NVFP4_FA_MMA_MULTIWARP
 
 #if defined(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT)
+static __device__ __forceinline__ float ggml_cuda_fattn_nvfp4_quant_error_16(
+        const float * vals,
+        const uint8_t scale_code) {
+    const float scale = ggml_cuda_ue4m3_to_fp32(scale_code);
+    const float inv_scale = scale > 0.0f ? 0.5f / scale : 0.0f;
+    float err = 0.0f;
+
+#pragma unroll
+    for (int j = 0; j < QK_NVFP4_SUB; ++j) {
+        const uint8_t q = ggml_cuda_float_to_fp4_e2m1(vals[j], inv_scale);
+        const float dq = scale * kvalues_mxfp4[q];
+        const float d = vals[j] - dq;
+        err += d * d;
+    }
+
+    return err;
+}
+
+static __device__ __forceinline__ uint8_t ggml_cuda_fattn_nvfp4_best_scale_code_16(
+        const float * vals,
+        const float   amax) {
+    if (amax == 0.0f) {
+        return 0;
+    }
+
+    uint8_t best_code = ggml_cuda_fp32_to_ue4m3(amax / 6.0f);
+    float best_err = ggml_cuda_fattn_nvfp4_quant_error_16(vals, best_code);
+
+#pragma unroll 1
+    for (int code = 1; code < 256; ++code) {
+        const float err = ggml_cuda_fattn_nvfp4_quant_error_16(vals, (uint8_t) code);
+        if (err < best_err) {
+            best_err = err;
+            best_code = (uint8_t) code;
+        }
+    }
+
+    return best_code;
+}
+
 static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_quantize_64_words(
         const float * vals,
         int *         qs_words,
@@ -519,7 +559,7 @@ static __device__ __forceinline__ void ggml_cuda_fattn_nvfp4_quantize_64_words(
             amax = fmaxf(amax, fabsf(vals[sub * QK_NVFP4_SUB + j]));
         }
 
-        const uint8_t sf = ggml_cuda_fp32_to_ue4m3_sw(amax / 6.0f);
+        const uint8_t sf = ggml_cuda_fattn_nvfp4_best_scale_code_16(vals + sub * QK_NVFP4_SUB, amax);
         scale_word |= (uint32_t) sf << (8 * sub);
 
         const float d = ggml_cuda_ue4m3_to_fp32(sf);
