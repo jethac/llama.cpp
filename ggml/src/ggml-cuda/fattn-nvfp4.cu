@@ -2104,12 +2104,7 @@ __global__ void fattn_nvfp4_mtp4_split_pv_from_prob_kernel(const fattn_nvfp4_mtp
                 A.x[l] = a_qs[row * tile_PV_A::J + col];
             }
 
-#pragma unroll
-            for (int l = 0; l < tile_PV_B::ne; ++l) {
-                const int row = ggml_cuda_fattn_nvfp4_native_pv_b_i(l, lane);
-                const int col = ggml_cuda_fattn_nvfp4_native_pv_b_j(l, lane);
-                B.x[l] = b_qs[row * tile_PV_B::J + col];
-            }
+            ggml_cuda_mma::load_generic(B, b_qs, tile_PV_B::J);
 
             const int tidx_A = lane / 4 + (lane % 2) * 8;
             const int tidx_B = lane / 4;
