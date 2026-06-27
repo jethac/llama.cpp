@@ -33,6 +33,9 @@
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
 #include "ggml-cuda/norm.cuh"
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+#include "ggml-cuda/nvfp4-kv-exec.cuh"
+#endif
 #include "ggml-cuda/opt-step-adamw.cuh"
 #include "ggml-cuda/opt-step-sgd.cuh"
 #include "ggml-cuda/out-prod.cuh"
@@ -608,6 +611,9 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     if (copy_event != nullptr) {
         CUDA_CHECK(cudaEventDestroy(copy_event));
     }
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    ggml_cuda_nvfp4_vx_clear_context(*this);
+#endif
     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
             if (streams[i][j] != nullptr) {

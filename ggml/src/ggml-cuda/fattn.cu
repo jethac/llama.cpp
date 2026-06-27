@@ -7,6 +7,41 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+#include "nvfp4-kv-exec.cuh"
+
+#include <cmath>
+#endif
+
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
+static bool ggml_cuda_flash_attn_ext_vec_stream_capturing(ggml_backend_cuda_context & ctx) {
+    cudaStreamCaptureStatus status;
+    CUDA_CHECK(cudaStreamIsCapturing(ctx.stream(), &status));
+    return status != cudaStreamCaptureStatusNone;
+}
+#endif
+
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+static void ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_vx(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * V = dst->src[2];
+    if (V == nullptr || V->type != GGML_TYPE_NVFP4) {
+        return;
+    }
+
+    (void) ggml_cuda_nvfp4_vx_prepare(ctx, V);
+
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
+    if (!ggml_cuda_flash_attn_ext_vec_stream_capturing(ctx)) {
+        float vx_max_abs_error = 0.0f;
+        float vx_mean_abs_error = 0.0f;
+        (void) ggml_cuda_nvfp4_vx_validate(ctx, V, &vx_max_abs_error, &vx_mean_abs_error);
+        GGML_ASSERT(std::isfinite(vx_max_abs_error));
+        GGML_ASSERT(std::isfinite(vx_mean_abs_error));
+    }
+#endif
+}
+#endif
+
 template <int DKQ, int DV, int ncols2>
 static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
@@ -262,6 +297,16 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
     ggml_tensor * V = dst->src[2];
+
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+    if (ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar(ctx, dst)) {
+        return;
+    }
+#endif
+
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    ggml_cuda_flash_attn_ext_vec_maybe_prepare_nvfp4_vx(ctx, dst);
+#endif
 
 #ifdef GGML_CUDA_FA_ALL_QUANTS
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)

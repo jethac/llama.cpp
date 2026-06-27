@@ -1,5 +1,8 @@
 #include "set-rows.cuh"
 #include "cpy-utils.cuh"
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+#include "nvfp4-kv-exec.cuh"
+#endif
 
 typedef void (*set_rows_kernel_t)(const char * src, char * dst);
 
@@ -357,4 +360,10 @@ void ggml_cuda_op_set_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     } else {
         set_rows_cuda<float, int32_t>(ctx, src0, src1, dst);
     }
+
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    if (dst->type == GGML_TYPE_NVFP4) {
+        (void) ggml_cuda_nvfp4_vx_after_set_rows(ctx, dst);
+    }
+#endif
 }

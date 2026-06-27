@@ -218,6 +218,12 @@ option(GGML_CUDA_NVFP4_FA_VEC_ALL_ROWS
                                             "ggml: allow experimental Blackwell NVFP4 vector FlashAttention for all supported Q rows" OFF)
 option(GGML_CUDA_NVFP4_FA_NATIVE_PV_REQUANT
                                             "ggml: use experimental Blackwell native FP4 PV with runtime V-tile requantization" OFF)
+option(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT
+                                            "ggml: enable experimental Blackwell NVFP4 KV execution-layout scaffolding" OFF)
+option(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE
+                                            "ggml: validate experimental Blackwell NVFP4 KV execution-layout roundtrip" OFF)
+option(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR
+                                            "ggml: use experimental scalar p1 NVFP4 attention consumer over the V execution layout" OFF)
 option(GGML_CUDA_NVFP4_FAST_KV_QUANT        "ggml: use experimental faster CUDA NVFP4 KV write quantizer" OFF)
 set(GGML_CUDA_FATTN_VEC_NTHREADS "128" CACHE STRING "ggml: CUDA FlashAttention vector kernel threads per block")
 set_property(CACHE GGML_CUDA_FATTN_VEC_NTHREADS PROPERTY STRINGS "64;128;256;512")

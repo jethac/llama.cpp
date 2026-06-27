@@ -3,7 +3,11 @@
 #include "cpy-utils.cuh"
 #include "fattn-common.cuh"
 #include "mma.cuh"
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+#include "nvfp4-kv-exec.cuh"
+#endif
 
+#include <cmath>
 #include <cstring>
 
 #if defined(GGML_CUDA_NVFP4_FA)
@@ -2232,6 +2236,57 @@ __global__ void fattn_nvfp4_mtp4_scalar_correctness_kernel(const fattn_nvfp4_mtp
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
 
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+__global__ void fattn_nvfp4_p1_vx_scalar_kernel(
+        const fattn_nvfp4_mtp4_params params,
+        const ggml_cuda_nvfp4_vx_layout vx_layout) {
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    const int col = threadIdx.x;
+    const int64_t q_head = (int64_t) blockIdx.x;
+    const int64_t seq = (int64_t) blockIdx.y;
+    const int64_t kv_head = q_head / params.gqa_ratio;
+
+    if (col >= params.v_head_dim || q_head >= params.ne_q_heads || seq >= params.ne_seqs || kv_head >= params.ne_kv_heads) {
+        return;
+    }
+
+    const float * q_ptr = params.Q +
+        q_head * params.q_stride_head +
+        seq    * params.q_stride_seq;
+    float * dst_ptr = params.dst +
+        q_head * params.dst_stride_head +
+        seq    * params.dst_stride_seq;
+
+    float kq_max = -3.402823466e+38F;
+    float rowsum = 0.0f;
+    float pv = 0.0f;
+
+#pragma unroll 1
+    for (int64_t kv_row = 0; kv_row < params.ne_kv_rows; ++kv_row) {
+        const block_nvfp4 * k_ptr = params.K +
+            kv_head * params.k_stride_head +
+            seq     * params.k_stride_seq +
+            kv_row  * params.k_stride_row;
+
+        const float mask = ggml_cuda_fattn_nvfp4_mask_value(params, 0, kv_row, seq);
+        const float score = ggml_cuda_fattn_nvfp4_dot_q_k(q_ptr, k_ptr, params.k_head_dim) * params.scale + mask;
+        const float kq_max_new = fmaxf(kq_max, score);
+        const float scale_old = rowsum == 0.0f ? 0.0f : expf(kq_max - kq_max_new);
+        const float scale_new = score - kq_max_new >= SOFTMAX_FTZ_THRESHOLD ? expf(score - kq_max_new) : 0.0f;
+
+        const float v = ggml_cuda_nvfp4_vx_dequant_value(vx_layout, seq, kv_head, kv_row, col);
+        pv = pv * scale_old + scale_new * v;
+        rowsum = rowsum * scale_old + scale_new;
+        kq_max = kq_max_new;
+    }
+
+    dst_ptr[col] = rowsum == 0.0f ? 0.0f : pv / rowsum;
+#else
+    GGML_UNUSED_VARS(params, vx_layout);
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
+}
+#endif // defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+
 __global__ void fattn_nvfp4_mtp4_compile_probe(
         const block_nvfp4 * q,
         const block_nvfp4 * k,
@@ -2474,6 +2529,52 @@ bool ggml_cuda_flash_attn_ext_nvfp4_mtp4_supported(int device, const ggml_tensor
 #endif // GGML_CUDA_NVFP4_FA
 }
 
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+static bool ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar_shape_supported(int device, const ggml_tensor * dst) {
+    if (!ggml_cuda_flash_attn_ext_nvfp4_mtp4_shape_supported(device, dst)) {
+        return false;
+    }
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * V = dst->src[2];
+
+    if (Q->ne[1] != 1) {
+        return false;
+    }
+
+    if (V->ne[0] > FATTN_NVFP4_MAX_HEAD_DIM) {
+        return false;
+    }
+
+    return true;
+}
+
+bool ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    ggml_cuda_set_device(ctx.device);
+
+    if (!ggml_cuda_flash_attn_ext_nvfp4_p1_vx_scalar_shape_supported(ctx.device, dst)) {
+        return false;
+    }
+
+    const ggml_tensor * V = dst->src[2];
+    if (!ggml_cuda_nvfp4_vx_has_direct_updates(ctx, V)) {
+        return false;
+    }
+
+    ggml_cuda_nvfp4_vx_layout vx_layout = {};
+    if (!ggml_cuda_nvfp4_vx_find(ctx, V, &vx_layout)) {
+        return false;
+    }
+
+    fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, nullptr);
+    const dim3 block((uint32_t) params.v_head_dim, 1, 1);
+    const dim3 grid((uint32_t) params.ne_q_heads, (uint32_t) params.ne_seqs, 1);
+    fattn_nvfp4_p1_vx_scalar_kernel<<<grid, block, 0, ctx.stream()>>>(params, vx_layout);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+#endif // defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT) && defined(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+
 size_t ggml_cuda_flash_attn_ext_nvfp4_mtp4_get_alloc_size(const ggml_tensor * dst) {
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
     return ggml_nbytes(dst);
@@ -2489,6 +2590,18 @@ void ggml_cuda_flash_attn_ext_nvfp4_mtp4(ggml_backend_cuda_context & ctx, ggml_t
     }
 
     fattn_nvfp4_mtp4_params params = ggml_cuda_fattn_nvfp4_mtp4_make_params(dst, lut);
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    (void) ggml_cuda_nvfp4_vx_prepare(ctx, dst->src[2]);
+#if defined(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
+    if (!ggml_cuda_flash_attn_ext_nvfp4_mtp4_stream_capturing(ctx)) {
+        float vx_max_abs_error = 0.0f;
+        float vx_mean_abs_error = 0.0f;
+        (void) ggml_cuda_nvfp4_vx_validate(ctx, dst->src[2], &vx_max_abs_error, &vx_mean_abs_error);
+        GGML_ASSERT(std::isfinite(vx_max_abs_error));
+        GGML_ASSERT(std::isfinite(vx_mean_abs_error));
+    }
+#endif // defined(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
+#endif // defined(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
 
 #if defined(GGML_CUDA_NVFP4_FA_MMA) && defined(GGML_CUDA_NVFP4_FA_MMA_MULTIWARP) && defined(GGML_CUDA_NVFP4_FA_MMA_SPLIT_KV)
     ggml_cuda_pool_alloc<float>  split_partial_alloc(ctx.pool());

@@ -190,6 +190,15 @@ if (CUDAToolkit_FOUND)
     if (GGML_CUDA_NVFP4_FAST_KV_QUANT)
         add_compile_definitions(GGML_CUDA_NVFP4_FAST_KV_QUANT)
     endif()
+    if (GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+        add_compile_definitions(GGML_CUDA_NVFP4_KV_EXEC_LAYOUT)
+    endif()
+    if (GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
+        add_compile_definitions(GGML_CUDA_NVFP4_KV_EXEC_VALIDATE)
+    endif()
+    if (GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+        add_compile_definitions(GGML_CUDA_NVFP4_KV_EXEC_P1_SCALAR)
+    endif()
 
     ggml_add_backend_library(ggml-cuda
                              ${GGML_HEADERS_CUDA}
